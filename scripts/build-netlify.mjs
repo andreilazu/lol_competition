@@ -11,3 +11,8 @@ if(!fault.ok)throw new Error('Could not build the blame page.');
 await mkdir('public/whos-fault',{recursive:true});
 await writeFile('public/whos-fault/index.html',await fault.text());
 console.log('Blame page built in public/whos-fault/.');
+const livePage=await worker.fetch(new Request('https://build.example/live/'),{});
+if(!livePage.ok)throw new Error('Could not build the live page.');
+await mkdir('public/live',{recursive:true});
+await writeFile('public/live/index.html',await livePage.text());
+console.log('Live page built in public/live/.');

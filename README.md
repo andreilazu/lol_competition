@@ -44,3 +44,7 @@ Verified OP.GG daily tier-graph readings for both accounts were added on 17 Nove
 Each player's champion list shows only champion portraits, names, KDA, win rate, and game count from opposing-team Solo/Duo matches. Every champion used in those matches is shown, ordered by game count. Champion filters, sorting controls, detailed match history, CS/XP metrics, and the 24-hour chart filter are omitted to keep the interface concise.
 
 KDA is total kills plus assists divided by total deaths; zero deaths displays Perfect. The backend retains MATCH-V5 summary data and bounded legacy backfill. Champion portraits come from CommunityDragon. An active Riot API key is required for live data.
+
+## Live games
+
+The `/live/` page shows the games both players are in right now, using Riot SPECTATOR-V5 through `/api/live`. If they are in the same game it shows one card (playing together or against each other); separate games get one card each; if only one is playing, only that game is shown. Each card lists both teams with champions, summoner spells, Riot IDs, Solo/Duo rank, bans, queue and a running game timer. Results are cached for 20 seconds so all viewers share one lookup, participant ranks are fetched once per game, and the page checks again every 30 seconds while open. Player PUUIDs are never sent to the browser.

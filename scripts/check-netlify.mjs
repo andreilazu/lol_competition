@@ -37,7 +37,7 @@ console.log('Passed: Netlify function import and routing, persistent storage ada
 
 const fault=await readFile('public/whos-fault/index.html','utf8');
 for(const path of ['/whos-fault','/whos-fault/'])assert.equal((await worker.fetch(new Request('https://test.example'+path),{})).status,200);
-assert.ok(html.includes('href="/whos-fault/"'));assert.ok(fault.includes('Just for fun'));assert.ok(!fault.includes('Find the culprit'));assert.ok(!fault.includes('KDA in losses'));
+assert.ok(html.includes('href="/whos-fault/"'));assert.ok(html.includes('href="/live/"'));assert.ok((await readFile('public/live/index.html','utf8')).includes('Live games'));assert.ok(fault.includes('Just for fun'));assert.ok(!fault.includes('Find the culprit'));assert.ok(!fault.includes('KDA in losses'));
 const elements=new Map();const element=id=>{if(!elements.has(id))elements.set(id,{innerHTML:'',textContent:'',hidden:false,setAttribute(){},querySelector(){return null;}});return elements.get(id);};
 const saved=new Map();const localStorage={getItem:key=>saved.get(key)||null,setItem:(key,value)=>saved.set(key,value)};
 const context=vm.createContext({document:{getElementById:element},fetch:()=>new Promise(()=>{}),setTimeout:()=>{},localStorage});
