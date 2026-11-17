@@ -1,5 +1,13 @@
 # Schizo Battle
 
+## Deploy to Netlify
+
+Import `andreilazu/lol_competition`, branch `main`. Leave the base directory blank, use `npm run build:netlify` as the build command, `public` as the publish directory, and `netlify/functions` as the functions directory. These settings are also stored in `netlify.toml`; Node 22 is selected automatically.
+
+Add `RIOT_API_KEY` through Netlify's environment variable settings, available to Functions, before deploying. Never add the key to GitHub or a frontend variable. Netlify Functions run the existing API and Netlify Blobs stores the shared cache, head-to-head results, and LP snapshots across deployments. No separate storage token is needed on Netlify. A public snapshot of the previous host's match results and LP history is included as the initial fallback; new stored entries override it.
+
+Run `npm ci`, `npm test`, `npm run build:netlify`, and `npm run test:netlify` to verify the Netlify build locally. The original `npm run build` still creates the Sites/Cloudflare Worker artifact.
+
 Public EUNE ranked comparison for Respectful Jew #miy23 and regelepetras2006 #smrfm.
 
 Run `npm run dev` for a local preview, `npm test` for checks, and `npm run build` to build the Worker. Local preview has no secret, so it shows the verified public snapshot. Set the RIOT_API_KEY runtime secret through Sites to enable live stats. Never commit the key.

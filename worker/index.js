@@ -6,6 +6,7 @@ async function riot(url,key){const r=await fetch(url,{headers:{'X-Riot-Token':ke
 async function accounts(env,key){const old=await env.BUCKET?.get('accounts.json');if(old)return old.json();const ids=await Promise.all(players.map(p=>riot('https://europe.api.riotgames.com/riot/account/v1/accounts/by-riot-id/'+encodeURIComponent(p.name)+'/'+p.tag,key)));await env.BUCKET?.put('accounts.json',JSON.stringify(ids));return ids;}
 function publicMatchups(s){return {checkedAt:s.checkedAt,counts:s.ids.map(a=>a.length),exhausted:s.exhausted,pending:s.pending.length,records:s.records,season:s.season,error:s.error||null,retryAt:s.retryAt||null};}
 async function matchups(request,env){
+ const deadline=env.MATCHUP_BUDGET_MS?Date.now()+env.MATCHUP_BUDGET_MS:Infinity;
  if(!['GET','POST'].includes(request.method))return json({error:'Method not allowed'},405);
  if(request.method==='POST'&&request.headers.get('Origin')&&request.headers.get('Origin')!==new URL(request.url).origin)return json({error:'Origin rejected.'},403);
  if(matchupFlight)return (await matchupFlight).clone();
@@ -28,7 +29,7 @@ async function matchups(request,env){
    const other=new Set(state.ids[1]),done=new Set(state.processed);state.pending=state.ids[0].filter(id=>other.has(id)&&!done.has(id));state.checkedAt=new Date().toISOString();
   }
   state.error=null;state.retryAt=null;
-  for(let n=0;n<6&&state.pending.length;n++){
+  for(let n=0;n<6&&state.pending.length&&Date.now()<deadline;n++){
    const id=state.pending[0];const match=await riot('https://europe.api.riotgames.com/lol/match/v5/matches/'+encodeURIComponent(id),key);const info=match.info;
    const pp=aa.map(a=>info.participants.find(p=>p.puuid===a.puuid));
    if(pp.every(Boolean)&&[420,440].includes(info.queueId)){
