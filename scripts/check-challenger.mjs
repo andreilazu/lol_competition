@@ -13,6 +13,7 @@ globalThis.fetch=async url=>{
  throw Error('Unexpected URL');
 };
 const cutoff=await(await worker.fetch(request('/api/challenger'),env)).json();assert.equal(cutoff.targetLp,1802,'Include players overtaking Challenger from lower Apex tiers.');assert.equal(calls,3);assert.ok(!JSON.stringify(cutoff).includes('puuid'));
+assert.equal(cutoff.grandmasterTargetLp,400);
 await worker.fetch(request('/api/challenger'),env);assert.equal(calls,3);
 assert.equal((await worker.fetch(request('/api/challenger','POST'),env)).status,405);
 const old={...cutoff,at:new Date(0).toISOString()};values.set('challenger-cutoff.json',JSON.stringify(old));
@@ -21,6 +22,10 @@ const stale=await(await worker.fetch(request('/api/challenger'),env)).json();ass
 values.delete('challenger-cutoff.json');assert.equal((await worker.fetch(request('/api/challenger'),env)).status,503);
 globalThis.fetch=async()=>Response.json({entries:[]});
 const sparse=await(await worker.fetch(request('/api/challenger'),env)).json();assert.equal(sparse.targetLp,800);
+assert.equal(sparse.grandmasterTargetLp,400);
+values.delete('challenger-cutoff.json');
+globalThis.fetch=async url=>Response.json({entries:url.includes('/masterleagues/')?Array.from({length:700},(_,i)=>({leaguePoints:1000+i})):[]});
+const full=await(await worker.fetch(request('/api/challenger'),env)).json();assert.equal(full.targetLp,1501);assert.equal(full.grandmasterTargetLp,1001,'Grandmaster includes the 200 Challenger places plus 500 Grandmaster places.');
 
 const rank=lp=>({tier:'GRANDMASTER',rank:'I',lp,wins:40,losses:20});
 values.set('latest.json',JSON.stringify({at:new Date(Date.now()-60000).toISOString(),queues:{solo:[rank(1301),rank(1663)]}}));calls=0;
@@ -37,5 +42,10 @@ assert.ok(element('cards').innerHTML.includes('606 LP to Challenger'));assert.ok
 assert.ok(vm.runInContext("renderClimb({tier:'GRANDMASTER',lp:1907})",context).includes('In range for Challenger'));
 assert.ok(vm.runInContext("renderClimb({tier:'CHALLENGER',lp:2200})",context).includes('Challenger reached'));
 assert.equal(vm.runInContext("renderClimb({tier:'DIAMOND',lp:70})",context),'');
+vm.runInContext('challengerData.grandmasterTargetLp=1205;draw()',context);
+const chart=element('chart').innerHTML;
+assert.equal((chart.match(/data-cutoff=/g)||[]).length,2);assert.ok(chart.includes('emblem-challenger.png'));assert.ok(chart.includes('emblem-grandmaster.png'));assert.ok(chart.includes('1,205 LP'));assert.ok(chart.includes('1,907 LP'));assert.ok(chart.includes('stroke-dasharray="7 6"'));assert.ok(!chart.includes('NaN'));assert.equal(element('cutoff-key').hidden,false);
+vm.runInContext('challengerData={targetLp:1400,grandmasterTargetLp:1390};draw()',context);assert.equal((element('chart').innerHTML.match(/class="rank-marker"/g)||[]).length,2);
 vm.runInContext('challengerData.stale=true;render()',context);assert.ok(!element('cards').innerHTML.includes('LP to Challenger'));
+assert.ok(!element('chart').innerHTML.includes('data-cutoff='));assert.equal(element('cutoff-key').hidden,true);
 console.log('Passed: live Apex cutoff, 200 slots, 800 LP minimum, privacy, cache and failure handling, fresh LP refresh, rounded +30 LP estimates, promotion states, and stale estimate suppression.');
