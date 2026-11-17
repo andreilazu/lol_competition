@@ -11,7 +11,7 @@ await worker.fetch(req('/api/stats','POST'),env);assert.equal(calls,4);const his
 
 // Matchup denominators must exclude teammates and remakes, and respect queues.
 let matchCalls=0;
-const participant=(puuid,teamId,win,extra={})=>({puuid,teamId,win,championName:'Ahri',kills:4,deaths:2,assists:8,...extra});
+const participant=(puuid,teamId,win,extra={})=>({puuid,teamId,win,championName:'Ahri',championId:103,kills:4,deaths:2,assists:8,totalMinionsKilled:160,neutralMinionsKilled:20,champExperience:15000,...extra});
 const details={
  A:{queueId:420,participants:[participant('p0',100,true),participant('p1',200,false)]},
  B:{queueId:420,participants:[participant('p0',100,false),participant('p1',200,true)]},
@@ -22,6 +22,9 @@ const details={
 globalThis.fetch=async(url)=>{matchCalls++;if(url.includes('by-riot-id'))return Response.json({puuid:url.includes('Respectful')?'p0':'p1'});if(url.includes('/ids?'))return Response.json(Object.keys(details));const id=url.split('/').at(-1);return Response.json({info:{gameStartTimestamp:Date.now()-1200000,gameEndTimestamp:Date.now(),...details[id]}});};
 const h=await(await worker.fetch(req('/api/matchups','POST'),env)).json();assert.equal(h.records.length,5);assert.equal(h.records.filter(r=>r.kind==='opponents'&&r.queue==='solo').length,2);assert.equal(h.records.filter(r=>r.kind==='teammates').length,1);assert.equal(h.records.filter(r=>r.kind==='remake').length,1);assert.deepEqual(h.records.filter(r=>r.kind==='opponents'&&r.queue==='solo').map(r=>r.winner),[0,1]);assert.equal(h.pending,0);assert.deepEqual(h.counts,[5,5]);assert.ok(h.exhausted.every(Boolean));
 const before=matchCalls;const again=await(await worker.fetch(req('/api/matchups','POST'),env)).json();assert.equal(matchCalls,before);assert.equal(again.records.length,5);assert.ok(!JSON.stringify(h).includes(env.RIOT_API_KEY));assert.ok(!JSON.stringify(h).includes('puuid'));
+assert.equal(h.records[0].stats[0].cs,180);assert.equal(h.records[0].stats[0].xp,15000);
+const migrationKey='matchups-'+new Date().getUTCFullYear()+'.json';const legacy=JSON.parse(store.get(migrationKey));delete legacy.records[0].stats;delete legacy.records[0].statsVersion;store.set(migrationKey,JSON.stringify(legacy));
+const migrated=await(await worker.fetch(req('/api/matchups','POST'),env)).json();assert.equal(matchCalls,before+1);assert.equal(migrated.records.length,5);assert.equal(migrated.records[0].stats[0].cs,180);assert.equal(new Set(JSON.parse(store.get(migrationKey)).processed).size,5);
 const crossOrigin=new Request('https://test.example/api/matchups',{method:'POST',headers:{Origin:'https://other.example'}});assert.equal((await worker.fetch(crossOrigin,env)).status,403);
 // Persist backoff and keep completed results if Riot throttles a wider scan.
 globalThis.fetch=async()=>new Response('{}',{status:429,headers:{'Retry-After':'60'}});
@@ -43,6 +46,17 @@ vm.runInContext('data='+JSON.stringify({solo:[make(0,1301),make(1,1325),make(10,
 vm.runInContext('data='+JSON.stringify({solo:[make(0,1301),make(10,1301)]})+';draw()',context);const flat=element('chart').innerHTML;const paths=[...flat.matchAll(/<path[^>]+d="([^"]+)"/g)].map(m=>m[1]);assert.equal(paths.length,2);assert.notEqual(paths[0],paths[1],'Two unchanged LP totals must remain on separate lines.');
 vm.runInContext('matchupData='+JSON.stringify(h)+';renderMatchups()',context);assert.ok(element('h2h').innerHTML.includes('50.0%'));assert.ok(element('h2h').innerHTML.includes('2 direct matchups'));assert.ok(element('h2h').innerHTML.includes('Opposing teams only'));assert.ok(element('h2h').innerHTML.includes('<details'));assert.ok(element('scanOlder').hidden);
 console.log('Passed: Solo/Duo-only interface, new name, removed clutter, actual LP totals, two distinct player lines, time spacing, and head-to-head rendering.');
+
+// Unequal match lengths and deaths distinguish means from pooled ratios.
+const championRows=[{queue:'solo',kind:'opponents',winner:0,champions:['Ahri','Rengar'],duration:1200,stats:[{championId:103,kills:10,deaths:0,assists:2,cs:200,xp:10000},{championId:107,kills:2,deaths:5,assists:3,cs:100,xp:8000}]},{queue:'solo',kind:'opponents',winner:1,champions:['Ahri','Elise'],duration:2400,stats:[{championId:103,kills:2,deaths:4,assists:6,cs:240,xp:20000},{championId:60,kills:8,deaths:0,assists:4,cs:160,xp:18000}]}];
+vm.runInContext('testRows='+JSON.stringify(championRows),context);
+const summary=vm.runInContext('summarizeChampion(testRows,0)',context);assert.equal(summary.cs,220);assert.equal(summary.csm,8);assert.equal(summary.xp,15000);assert.equal(summary.kda,5);assert.equal(summary.wins,1);
+vm.runInContext('renderChampions(testRows)',context);assert.ok(element('champion-stats').innerHTML.includes('5.00 KDA'));assert.ok(element('champion-stats').innerHTML.includes('Perfect'));assert.ok(element('champion-stats').innerHTML.includes('15,000'));assert.ok(element('champion-stats').innerHTML.includes('champion-icons/103.png'));
+vm.runInContext("championFilters[1]='Rengar';renderChampions(testRows)",context);assert.ok(element('champion-stats').innerHTML.includes('100%'));assert.ok(element('champion-note').textContent.startsWith('1 of 2'));assert.ok(!element('champion-stats').innerHTML.includes('champion-name">Elise'));
+vm.runInContext("championFilters[0]='Elise';renderChampions(testRows)",context);assert.ok(element('champion-stats').innerHTML.includes('No head-to-head games for this champion pairing.'));
+vm.runInContext("championFilters[0]='';championFilters[1]='';renderChampions([])",context);assert.ok(element('champion-stats').innerHTML.includes('No opposing-team'));
+const missing=vm.runInContext("summarizeChampion([{duration:1200,winner:0,kda:['4/0/8','0/4/0']}],0)",context);assert.equal(missing.cs,null);assert.equal(missing.xp,null);assert.equal(missing.kda,Infinity);assert.equal(missing.csGames,0);
+console.log('Passed: CS includes jungle, XP extraction, legacy backfill without duplicates, champion averages, zero deaths, missing data, exact pair filters, and empty states.');
 
 vm.runInContext('days=30;data={solo:[]};draw()',context);const older=element('chart').innerHTML;assert.ok(older.includes('622 LP'));assert.ok(older.includes('1,718 LP'));assert.ok(older.includes('2026-11-05'));assert.ok(older.includes('OP.GG'));assert.equal((older.match(/data-player=/g)||[]).length,2);assert.ok(element('chart-note').innerHTML.includes('OP.GG'));const historicPath=older.match(/data-player="0" d="([^"]+)"/)[1];assert.equal((historicPath.match(/M/g)||[]).length,1,'Different player observation dates must not disconnect the line.');console.log('Passed: verified historical observations, independent player dates, continuous per-player lines, date-only source attribution.');
 
