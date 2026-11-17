@@ -1,0 +1,41 @@
+import assert from 'node:assert/strict';
+import vm from 'node:vm';
+import worker from '../worker/index.js';
+const values=new Map();const BUCKET={async get(key){return values.has(key)?{json:async()=>JSON.parse(values.get(key))}:null;},async put(key,value){values.set(key,value);}};
+const env={BUCKET,RIOT_API_KEY:'RGAPI-00000000-0000-0000-0000-000000000000'};
+const request=(path,method='GET')=>new Request('https://test.example'+path,{method});
+let calls=0;
+globalThis.fetch=async url=>{
+ calls++;
+ if(url.includes('/challengerleagues/'))return Response.json({entries:Array.from({length:200},(_,i)=>({leaguePoints:1800+i,puuid:'private'}))});
+ if(url.includes('/masterleagues/'))return Response.json({entries:[{leaguePoints:2500,puuid:'private'}]});
+ if(url.includes('/grandmasterleagues/'))return Response.json({entries:[]});
+ throw Error('Unexpected URL');
+};
+const cutoff=await(await worker.fetch(request('/api/challenger'),env)).json();assert.equal(cutoff.targetLp,1802,'Include players overtaking Challenger from lower Apex tiers.');assert.equal(calls,3);assert.ok(!JSON.stringify(cutoff).includes('puuid'));
+await worker.fetch(request('/api/challenger'),env);assert.equal(calls,3);
+assert.equal((await worker.fetch(request('/api/challenger','POST'),env)).status,405);
+const old={...cutoff,at:new Date(0).toISOString()};values.set('challenger-cutoff.json',JSON.stringify(old));
+globalThis.fetch=async()=>new Response('{}',{status:429});
+const stale=await(await worker.fetch(request('/api/challenger'),env)).json();assert.equal(stale.stale,true);
+values.delete('challenger-cutoff.json');assert.equal((await worker.fetch(request('/api/challenger'),env)).status,503);
+globalThis.fetch=async()=>Response.json({entries:[]});
+const sparse=await(await worker.fetch(request('/api/challenger'),env)).json();assert.equal(sparse.targetLp,800);
+
+const rank=lp=>({tier:'GRANDMASTER',rank:'I',lp,wins:40,losses:20});
+values.set('latest.json',JSON.stringify({at:new Date(Date.now()-60000).toISOString(),queues:{solo:[rank(1301),rank(1663)]}}));calls=0;
+globalThis.fetch=async url=>{calls++;return Response.json(url.includes('/by-riot-id/')?{puuid:'test'}:[{queueType:'RANKED_SOLO_5x5',tier:'GRANDMASTER',rank:'I',leaguePoints:1350,wins:41,losses:20}]);};
+const fresh=await(await worker.fetch(request('/api/stats?fresh=1','POST'),env)).json();assert.equal(fresh.queues.solo[0].lp,1350);assert.equal(calls,4);
+await worker.fetch(request('/api/stats?fresh=1','POST'),env);assert.equal(calls,4,'Repeated clicks retain a short cache.');
+
+const html=await(await worker.fetch(request('/'),{})).text();
+const elements=new Map();const element=id=>{if(!elements.has(id))elements.set(id,{innerHTML:'',textContent:'',disabled:false,hidden:false});return elements.get(id);};
+const context=vm.createContext({document:{getElementById:element,querySelectorAll:()=>[]},fetch:()=>new Promise(()=>{}),setTimeout:()=>{},clearTimeout:()=>{},setInterval:()=>{}});
+vm.runInContext(html.match(/<script>([\s\S]*?)<\/script>/)[1],context);
+vm.runInContext('data='+JSON.stringify({solo:[{source:'Riot API',at:new Date().toISOString(),players:[rank(1301),rank(1663)]}]})+';challengerData={targetLp:1907};render()',context);
+assert.ok(element('cards').innerHTML.includes('606 LP to Challenger'));assert.ok(element('cards').innerHTML.includes('≈21 wins'));assert.ok(element('cards').innerHTML.includes('244 LP to Challenger'));assert.ok(element('cards').innerHTML.includes('≈9 wins'));assert.ok(element('cards').innerHTML.includes('+30 LP per win'));
+assert.ok(vm.runInContext("renderClimb({tier:'GRANDMASTER',lp:1907})",context).includes('In range for Challenger'));
+assert.ok(vm.runInContext("renderClimb({tier:'CHALLENGER',lp:2200})",context).includes('Challenger reached'));
+assert.equal(vm.runInContext("renderClimb({tier:'DIAMOND',lp:70})",context),'');
+vm.runInContext('challengerData.stale=true;render()',context);assert.ok(!element('cards').innerHTML.includes('LP to Challenger'));
+console.log('Passed: live Apex cutoff, 200 slots, 800 LP minimum, privacy, cache and failure handling, fresh LP refresh, rounded +30 LP estimates, promotion states, and stale estimate suppression.');

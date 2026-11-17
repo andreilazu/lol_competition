@@ -1,5 +1,7 @@
 # Schizo Battle
 
+Player cards show LP remaining to the current EUNE Challenger target and estimated consecutive wins at an assumed +30 LP per win. The target comes from Riot's Challenger, Grandmaster, and Master ladders: one LP above the 200th Apex player, with an 800 LP minimum. `/api/challenger` caches only the target and timestamp for five minutes. Estimates are hidden if the cutoff is stale or unavailable, or the player has no verified Apex LP reading. Manual Refresh requests fresh rank data, with a 30-second minimum cache between requests.
+
 The `/whos-fault/` page lists shared Solo/Duo losses, newest first, with both champion portraits, each player's K/D/A and KDA ratio, and a short joke verdict beneath each match. Each new match verdict blames Respectful Jew with probability 1/3 and regelepetras2006 with probability 2/3, with player-specific random reasons. Verdicts persist in browser storage across reloads. Any precise timestamp in a joke is generated within the match duration; the page labels these verdicts "Just for fun". Stored teammate matches gain an explicit `teamWon` field through the existing bounded backfill so wins, losses, and remakes are separated correctly.
 
 ## Deploy to Netlify

@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "node scripts/dev.mjs",
     "build": "node scripts/build.mjs",
-    "test": "node scripts/check.mjs && node scripts/check-older.mjs",
+    "test": "node scripts/check.mjs && node scripts/check-older.mjs && node scripts/check-challenger.mjs",
     "validate": "node scripts/validate-artifact.mjs",
     "build:netlify": "node scripts/build-netlify.mjs",
     "test:netlify": "node scripts/check-netlify.mjs"
