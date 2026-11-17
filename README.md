@@ -1,5 +1,7 @@
 # Schizo Battle
 
+The `/whos-fault/` page compares aggregate KDA and deaths per game in shared Solo/Duo losses. Its clearly labeled random verdict blames Respectful Jew with probability 1/3 and regelepetras2006 with probability 2/3, independently on each click. The verdict is a joke, not a statistical cause of defeat. Stored teammate matches gain an explicit `teamWon` field through the existing bounded backfill so wins, losses, and remakes are separated correctly.
+
 ## Deploy to Netlify
 
 Import `andreilazu/lol_competition`, branch `main`. Leave the base directory blank, use `npm run build:netlify` as the build command, `public` as the publish directory, and `netlify/functions` as the functions directory. These settings are also stored in `netlify.toml`; Node 22 is selected automatically.

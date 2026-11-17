@@ -6,3 +6,8 @@ if(!page.ok)throw new Error('Could not build the home page.');
 await mkdir('public',{recursive:true});
 await writeFile('public/index.html',await page.text());
 console.log('Netlify home page built in public/.');
+const fault=await worker.fetch(new Request('https://build.example/whos-fault/'),{});
+if(!fault.ok)throw new Error('Could not build the blame page.');
+await mkdir('public/whos-fault',{recursive:true});
+await writeFile('public/whos-fault/index.html',await fault.text());
+console.log('Blame page built in public/whos-fault/.');
