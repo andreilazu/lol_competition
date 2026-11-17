@@ -19,3 +19,8 @@ The LP chart uses only verified Riot snapshots, actual timestamps, and either LP
 ## Simplified Solo/Duo interface
 
 The public UI shows only Solo/Duo. Head-to-head results remain prominent; match details are collapsed. The chart shows both players' actual LP totals on one shared LP axis against real timestamps, with 24-hour, 7-day, 30-day and all-history filters. No cumulative ladder-point conversions or baseline-change modes are shown. Flex data retained by the existing backend is not exposed in the interface. The existing public URL is preserved.
+
+
+## Historical LP observations
+
+Verified OP.GG daily tier-graph readings for both accounts were added on 17 November 2026. See historical-lp-provenance.json for source URLs and exact retained readings. These date-only observations are displayed with their calendar date and OP.GG attribution, independently per player; no intraday timestamps or unobserved LP are claimed. Live stats and shared history remain from Riot.
