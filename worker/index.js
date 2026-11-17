@@ -121,7 +121,7 @@ function draw(){
  $('chart-note').innerHTML=ss.some(s=>s.source==='OP.GG')?'Earlier readings: <a href="https://op.gg/lol/summoners/eune/Respectful%20Jew-miy23" target="_blank" rel="noopener">OP.GG</a>.':'';
  if(!ss.length){$('chart').innerHTML='<div class="chart-empty">No LP recorded for this period.</div>';return;}
  const value=(s,i)=>s.players[i]&&s.players[i].tier!=='UNRANKED'?s.players[i].lp:null;
- const ranks=challengerData&&!challengerData.stale?[{name:'Challenger',key:'challenger',lp:challengerData.targetLp,color:'#ddbb72'},{name:'Grandmaster',key:'grandmaster',lp:challengerData.grandmasterTargetLp,color:'#df877f'}].filter(r=>Number.isFinite(r.lp)):[];
+ const ranks=challengerData&&!challengerData.stale?[{name:'Challenger',key:'challenger',icon:'https://cmsassets.rgpub.io/sanity/images/dsfx7636/news_live/90b96271598e5ca3ca2ceed26cd72f8bfe78f7b6-1088x871.png?w=128',lp:challengerData.targetLp,color:'#ddbb72'},{name:'Grandmaster',key:'grandmaster',icon:'https://cmsassets.rgpub.io/sanity/images/dsfx7636/news_live/e10270e43e31359f78d8ce6c33ee54a0d6f5d540-1088x871.png?w=128',lp:challengerData.grandmasterTargetLp,color:'#df877f'}].filter(r=>Number.isFinite(r.lp)):[];
  $('cutoff-key').hidden=!ranks.length;
  const vals=ss.flatMap(s=>[value(s,0),value(s,1)]).filter(v=>v!==null);
  if(!vals.length){$('chart').innerHTML='<div class="chart-empty">No ranked LP to show yet.</div>';return;}
@@ -135,7 +135,7 @@ function draw(){
   if(gm&&challenger)out+='<rect x="65" y="'+y(challenger.lp)+'" width="730" height="'+Math.max(0,y(gm.lp)-y(challenger.lp))+'" fill="#df877f" opacity=".035"/>';
   ranks.forEach((rank,index)=>{
    const lineY=y(rank.lp),other=ranks[1-index],badgeY=other&&Math.abs(lineY-y(other.lp))<42?lineY+(index?22:-22):lineY;
-   out+='<g class="rank-marker" data-cutoff="'+rank.key+'"><title>Current EUNE '+rank.name+' target: '+fmt(rank.lp)+' LP</title><line x1="65" x2="795" y1="'+lineY+'" y2="'+lineY+'" stroke="'+rank.color+'" stroke-width="1.5" stroke-dasharray="7 6" opacity=".8"/>'+(badgeY!==lineY?'<path d="M795 '+lineY+' L806 '+badgeY+'" fill="none" stroke="'+rank.color+'" opacity=".5"/>':'')+'<image href="https://raw.communitydragon.org/latest/plugins/rcp-fe-lol-static-assets/global/default/ranked-emblem/emblem-'+rank.key+'.png" x="807" y="'+(badgeY-23)+'" width="46" height="46"/><text x="861" y="'+(badgeY-3)+'" fill="'+rank.color+'" font-size="12" font-weight="600">'+rank.name+'</text><text x="861" y="'+(badgeY+13)+'" fill="#a3b0b7" font-size="11">'+fmt(rank.lp)+' LP</text></g>';
+   out+='<g class="rank-marker" data-cutoff="'+rank.key+'"><title>Current EUNE '+rank.name+' target: '+fmt(rank.lp)+' LP</title><line x1="65" x2="795" y1="'+lineY+'" y2="'+lineY+'" stroke="'+rank.color+'" stroke-width="1.5" stroke-dasharray="7 6" opacity=".8"/>'+(badgeY!==lineY?'<path d="M795 '+lineY+' L806 '+badgeY+'" fill="none" stroke="'+rank.color+'" opacity=".5"/>':'')+'<image data-rank-icon="'+rank.key+'" href="'+rank.icon+'" x="807" y="'+(badgeY-23)+'" width="46" height="46"/><text x="861" y="'+(badgeY-3)+'" fill="'+rank.color+'" font-size="12" font-weight="600">'+rank.name+'</text><text x="861" y="'+(badgeY+13)+'" fill="#a3b0b7" font-size="11">'+fmt(rank.lp)+' LP</text></g>';
   });
  }
  for(let i=0;i<2;i++){

@@ -44,7 +44,7 @@ assert.ok(vm.runInContext("renderClimb({tier:'CHALLENGER',lp:2200})",context).in
 assert.equal(vm.runInContext("renderClimb({tier:'DIAMOND',lp:70})",context),'');
 vm.runInContext('challengerData.grandmasterTargetLp=1205;draw()',context);
 const chart=element('chart').innerHTML;
-assert.equal((chart.match(/data-cutoff=/g)||[]).length,2);assert.ok(chart.includes('emblem-challenger.png'));assert.ok(chart.includes('emblem-grandmaster.png'));assert.ok(chart.includes('1,205 LP'));assert.ok(chart.includes('1,907 LP'));assert.ok(chart.includes('stroke-dasharray="7 6"'));assert.ok(!chart.includes('NaN'));assert.equal(element('cutoff-key').hidden,false);
+assert.equal((chart.match(/data-cutoff=/g)||[]).length,2);assert.ok(chart.includes('data-rank-icon="challenger"'));assert.ok(chart.includes('data-rank-icon="grandmaster"'));assert.ok(chart.includes('1,205 LP'));assert.ok(chart.includes('1,907 LP'));assert.ok(chart.includes('stroke-dasharray="7 6"'));assert.ok(!chart.includes('NaN'));assert.equal(element('cutoff-key').hidden,false);
 vm.runInContext('challengerData={targetLp:1400,grandmasterTargetLp:1390};draw()',context);assert.equal((element('chart').innerHTML.match(/class="rank-marker"/g)||[]).length,2);
 vm.runInContext('challengerData.stale=true;render()',context);assert.ok(!element('cards').innerHTML.includes('LP to Challenger'));
 assert.ok(!element('chart').innerHTML.includes('data-cutoff='));assert.equal(element('cutoff-key').hidden,true);
