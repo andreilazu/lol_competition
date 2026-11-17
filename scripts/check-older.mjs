@@ -3,7 +3,7 @@ import vm from 'node:vm';
 import worker from '../worker/index.js';
 
 const year=new Date().getUTCFullYear();
-const legacy={season:year,ids:[['BASE'],['BASE']],offset:[1,1],exhausted:[true,true],processed:['BASE'],pending:[],records:[{id:'BASE',queue:'solo',kind:'opponents',winner:0,at:year+'-03-01T00:00:00Z',duration:1200,champions:['Ahri','Rengar'],kda:['4/2/8','2/4/3'],statsVersion:1}],checkedAt:new Date().toISOString()};
+const legacy={verificationVersion:1,season:year,ids:[['BASE'],['BASE']],offset:[1,1],exhausted:[true,true],processed:['BASE'],pending:[],records:[{id:'BASE',queue:'solo',kind:'opponents',winner:0,at:year+'-03-01T00:00:00Z',duration:1200,champions:['Ahri','Rengar'],kda:['4/2/8','2/4/3'],statsVersion:1}],checkedAt:new Date().toISOString()};
 const data=new Map([['matchups-'+year+'.json',JSON.stringify(legacy)],['accounts.json',JSON.stringify([{puuid:'p0'},{puuid:'p1'}])]]);
 const BUCKET={async get(key){return data.has(key)?{json:async()=>JSON.parse(data.get(key))}:null;},async put(key,value){data.set(key,value);}};
 const env={BUCKET,RIOT_API_KEY:'test'};
@@ -45,3 +45,23 @@ context.fetch=response(limited);await timers.shift().fn();assert.ok(timers[0].ms
 context.fetch=response(complete);await timers.shift().fn();assert.equal(timers.length,0);assert.equal(element('scanOlder').hidden,true);assert.ok(element('h2h').innerHTML.includes('End of available history'));
 context.fetch=async()=>{throw Error('Network unavailable');};await vm.runInContext('olderScanning=true;loadMatchups(true)',context);assert.ok(element('h2h').innerHTML.includes('Network unavailable'));assert.equal(element('scanOlder').textContent,'Retry search');
 console.log('Passed: season migration, pre-season matches, multi-page scans without shared games, persisted cursors, throttling resume, missing match skipping, automatic client continuation, progress, and visible errors.');
+
+// Re-resolve Riot IDs and re-fetch existing matches rather than trusting imports.
+const stale={...legacy,records:[{...legacy.records[0],id:'OLD'}, {...legacy.records[0],id:'WRONG'}],ids:[['OLD','WRONG'],['OLD','WRONG']],processed:['OLD','WRONG'],historyScope:'available'};
+delete stale.verificationVersion;
+data.set('matchups-all.json',JSON.stringify(stale));
+data.set('accounts.json',JSON.stringify([{puuid:'outdated0'},{puuid:'outdated1'}]));
+let resolved=0;
+globalThis.fetch=async url=>{
+ if(url.includes('/by-riot-id/')){resolved++;return Response.json({puuid:url.includes('Respectful')?'p0':'p1'});}
+ if(url.includes('/ids?'))return Response.json(['OLD','NEW']);
+ const id=url.split('/').at(-1);
+ return Response.json({info:{queueId:420,gameVersion:'26.22',gameStartTimestamp:Date.UTC(year,10,16),gameDuration:1800,participants:[{puuid:'p0',teamId:100,win:true,championName:'Ahri',kills:5,deaths:2,assists:4}, {puuid:id==='WRONG'?'unrelated':'p1',teamId:200,win:false,championName:'Rengar',kills:2,deaths:5,assists:1}]}});
+};
+const fresh=await(await worker.fetch(new Request('https://test.example/api/matchups?refresh=1',{method:'POST'}),env)).json();
+assert.equal(resolved,2,'Cached identities must not prevent fresh account lookups.');
+assert.deepEqual(fresh.records.map(r=>r.id).sort(),['NEW','OLD']);
+assert.equal(fresh.records.find(r=>r.id==='OLD').at,year+'-11-16T00:00:00.000Z');
+assert.ok(fresh.records.every(r=>r.verifiedAt&&r.gameVersion==='26.22'));
+assert.ok(fresh.accountsCheckedAt);assert.equal(fresh.pending,0);assert.ok(!JSON.stringify(fresh).includes('puuid'));
+console.log('Passed: fresh account resolution, cached-date replacement from Riot, new recent matches, removal of unrelated cached records, and verification provenance.');

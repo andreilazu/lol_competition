@@ -3,8 +3,8 @@ const initial={at:'2026-11-17T13:55:00Z',source:'Public snapshot · League of Gr
 let inFlight, matchupFlight;
 const json=(body,status=200)=>new Response(JSON.stringify(body),{status,headers:{'Content-Type':'application/json','Cache-Control':'no-store'}});
 async function riot(url,key){const r=await fetch(url,{headers:{'X-Riot-Token':key},signal:AbortSignal.timeout(15000)});if(!r.ok){const e=new Error(({401:'Riot rejected this API key.',403:'The server’s Riot API key is invalid or expired. The site owner needs to replace it.',404:'Account or ranked data not found on EUNE.',429:'Riot rate limit reached. Please wait and retry.'})[r.status]||'Riot is temporarily unavailable. Please retry.');e.riotStatus=r.status;e.status=r.status===429?429:502;e.retryAfter=Math.max(5,Number(r.headers.get('Retry-After'))||120);throw e;}return r.json();}
-async function accounts(env,key){const old=await env.BUCKET?.get('accounts.json');if(old)return old.json();const ids=await Promise.all(players.map(p=>riot('https://europe.api.riotgames.com/riot/account/v1/accounts/by-riot-id/'+encodeURIComponent(p.name)+'/'+p.tag,key)));await env.BUCKET?.put('accounts.json',JSON.stringify(ids));return ids;}
-function publicMatchups(s){return {checkedAt:s.checkedAt,counts:s.ids.map(a=>a.length),exhausted:s.exhausted,pending:s.pending.length,records:s.records,season:s.season,historyScope:s.historyScope||'season',unavailable:s.unavailable?.length||0,rateLimited:Boolean(s.rateLimited),error:s.error||null,retryAt:s.retryAt||null};}
+async function accounts(env,key,force=false){const old=await env.BUCKET?.get('accounts.json');if(old&&!force)return old.json();const ids=await Promise.all(players.map(p=>riot('https://europe.api.riotgames.com/riot/account/v1/accounts/by-riot-id/'+encodeURIComponent(p.name)+'/'+p.tag,key)));await env.BUCKET?.put('accounts.json',JSON.stringify(ids));return ids;}
+function publicMatchups(s){return {checkedAt:s.checkedAt,counts:s.ids.map(a=>a.length),exhausted:s.exhausted,pending:s.pending.length,records:s.records,season:s.season,historyScope:s.historyScope||'season',verificationVersion:s.verificationVersion||0,accountsCheckedAt:s.accountsCheckedAt||null,unavailable:s.unavailable?.length||0,rateLimited:Boolean(s.rateLimited),error:s.error||null,retryAt:s.retryAt||null};}
 async function matchups(request,env){
  const deadline=env.MATCHUP_BUDGET_MS?Date.now()+env.MATCHUP_BUDGET_MS:Infinity;
  if(!['GET','POST'].includes(request.method))return json({error:'Method not allowed'},405);
@@ -21,8 +21,15 @@ async function matchups(request,env){
   state.pending=[...new Set([...state.pending,...state.records.filter(r=>r.kind==='opponents'&&r.statsVersion!==1).map(r=>r.id)])];
   if(state.retryAt&&Date.now()<Date.parse(state.retryAt))return json(publicMatchups(state));
   if(!env.RIOT_API_KEY)return json({error:'The server needs a Riot API key.'},503);
-  const key=env.RIOT_API_KEY, aa=await accounts(env,key);const older=new URL(request.url).searchParams.get('older')==='1';
-  if(!state.pending.length&&(older||!state.checkedAt||Date.now()-Date.parse(state.checkedAt)>300000)){
+  const params=new URL(request.url).searchParams;
+  const verify=params.get('refresh')==='1'||state.verificationVersion!==1;
+  const key=env.RIOT_API_KEY, aa=await accounts(env,key,verify);const older=params.get('older')==='1';
+  if(verify){
+   state.ids=[[],[]];state.offset=[0,0];state.exhausted=[false,false];state.processed=[];
+   state.pending=state.records.map(r=>r.id);state.checkedAt=null;state.scanEndTime=Math.floor(Date.now()/1000);
+   state.verificationVersion=1;state.accountsCheckedAt=new Date().toISOString();
+  }
+  if((verify||!state.pending.length)&&(older||!state.checkedAt||Date.now()-Date.parse(state.checkedAt)>300000)){
    for(let i=0;i<2;i++){
     if(older&&state.exhausted[i])continue;
     const start=older?state.offset[i]:0;
@@ -31,7 +38,7 @@ async function matchups(request,env){
     // Save each cursor so a rate limit on the other account cannot discard progress.
     await env.BUCKET.put('matchups-all.json',JSON.stringify(state));
    }
-   const other=new Set(state.ids[1]),done=new Set(state.processed);state.pending=state.ids[0].filter(id=>other.has(id)&&!done.has(id));state.checkedAt=new Date().toISOString();
+   const other=new Set(state.ids[1]),done=new Set(state.processed);state.pending=[...new Set([...state.pending,...state.ids[0].filter(id=>other.has(id)&&!done.has(id))])];state.checkedAt=new Date().toISOString();
   }
   // Recompute even after a partial page scan was interrupted by rate limiting.
   const other=new Set(state.ids[1]),done=new Set(state.processed);state.pending=[...new Set([...state.pending,...state.ids[0].filter(id=>other.has(id)&&!done.has(id))])];
@@ -49,9 +56,9 @@ async function matchups(request,env){
     const remake=duration<300||pp.some(p=>p.gameEndedInEarlySurrender);
     const kind=remake?'remake':pp[0].teamId===pp[1].teamId?'teammates':'opponents';
     const number=v=>Number.isFinite(v)&&v>=0?v:null;
-    const record={id,queue:info.queueId===420?'solo':'flex',at:new Date(info.gameStartTimestamp).toISOString(),duration,kind,winner:pp[0].win===pp[1].win?null:pp[0].win?0:1,champions:pp.map(p=>p.championName),kda:pp.map(p=>[p.kills,p.deaths,p.assists].join('/')),statsVersion:1,stats:pp.map(p=>({championId:number(p.championId),kills:number(p.kills),deaths:number(p.deaths),assists:number(p.assists),cs:number(p.totalMinionsKilled)!==null&&number(p.neutralMinionsKilled)!==null?p.totalMinionsKilled+p.neutralMinionsKilled:null,xp:number(p.champExperience)}))};
+    const record={id,queue:info.queueId===420?'solo':'flex',at:new Date(info.gameStartTimestamp).toISOString(),duration,kind,winner:pp[0].win===pp[1].win?null:pp[0].win?0:1,champions:pp.map(p=>p.championName),kda:pp.map(p=>[p.kills,p.deaths,p.assists].join('/')),statsVersion:1,verifiedAt:new Date().toISOString(),gameVersion:info.gameVersion||null,stats:pp.map(p=>({championId:number(p.championId),kills:number(p.kills),deaths:number(p.deaths),assists:number(p.assists),cs:number(p.totalMinionsKilled)!==null&&number(p.neutralMinionsKilled)!==null?p.totalMinionsKilled+p.neutralMinionsKilled:null,xp:number(p.champExperience)}))};
     const existing=state.records.findIndex(r=>r.id===id);if(existing<0)state.records.push(record);else state.records[existing]=record;
-   }
+   }else{state.records=state.records.filter(r=>r.id!==id);}
    if(!state.processed.includes(id))state.processed.push(id);state.pending.shift();
   }
   await env.BUCKET.put('matchups-all.json',JSON.stringify(state));return json(publicMatchups(state));
@@ -128,11 +135,11 @@ function renderMatchups(){
  $('scanOlder').disabled=matchupBusy||olderScanning||Boolean(d.retryAt&&Date.parse(d.retryAt)>Date.now());
  $('scanOlder').textContent=olderScanning?'Searching…':d.error?'Retry search':'Load older matches';
 }
-async function loadMatchups(older=false){
+async function loadMatchups(older=false,force=false){
  if(matchupBusy)return;clearTimeout(matchupTimer);matchupBusy=true;if(matchupData)renderMatchups();
  let next=null,delay=3000;
  try{
-  const r=await fetch('/api/matchups'+(older?'?older=1':''),{method:'POST'});const d=await r.json();
+  const r=await fetch('/api/matchups'+(force?'?refresh=1':older?'?older=1':''),{method:'POST'});const d=await r.json();
   if(!r.ok)throw Error(d.error||'Match history unavailable.');
   matchupData=d;
   if(d.rateLimited&&d.retryAt&&(olderScanning||d.pending)){
@@ -152,4 +159,4 @@ async function loadMatchups(older=false){
 }
 async function loadHistory(){const r=await fetch('/api/history');if(!r.ok)throw Error('LP history unavailable.');const h=await r.json();data={solo:h.snapshots.filter(s=>Array.isArray(s.queues?.solo)).sort((a,b)=>a.at.localeCompare(b.at)).map(s=>({at:s.at,source:s.source,players:s.queues.solo}))};}
 async function refresh(){if(busy)return;busy=true;$('refresh').disabled=true;$('refresh').textContent='Refreshing…';try{const r=await fetch('/api/stats',{method:'POST'});const d=await r.json();if(!r.ok)throw Error(d.error||'Could not refresh.');await loadHistory();if(!data.solo.some(s=>s.at===d.at))data.solo.push({at:d.at,source:d.source,players:d.queues.solo});showError('');render();}catch(e){showError(e.message);}finally{busy=false;$('refresh').disabled=false;$('refresh').textContent='Refresh';}}
-$('refresh').onclick=()=>{refresh();loadMatchups();};$('scanOlder').onclick=()=>{if(matchupBusy)return;olderScanning=true;loadMatchups(true);};document.querySelectorAll('[data-days]').forEach(b=>b.onclick=()=>{days=Number(b.dataset.days);document.querySelectorAll('[data-days]').forEach(x=>x.classList.toggle('active',x===b));draw();});setInterval(()=>{if(!document.hidden){refresh();if(!olderScanning)loadMatchups();}},300000);render();loadHistory().then(render).catch(()=>{}).finally(refresh);loadMatchups();</script></body></html>`;
+$('refresh').onclick=()=>{refresh();loadMatchups(false,true);};$('scanOlder').onclick=()=>{if(matchupBusy)return;olderScanning=true;loadMatchups(true);};document.querySelectorAll('[data-days]').forEach(b=>b.onclick=()=>{days=Number(b.dataset.days);document.querySelectorAll('[data-days]').forEach(x=>x.classList.toggle('active',x===b));draw();});setInterval(()=>{if(!document.hidden){refresh();if(!olderScanning)loadMatchups();}},300000);render();loadHistory().then(render).catch(()=>{}).finally(refresh);loadMatchups();</script></body></html>`;
