@@ -27,6 +27,6 @@ Verified OP.GG daily tier-graph readings for both accounts were added on 17 Nove
 
 ## Champion head-to-head stats
 
-The champion panels use only opposing-team Solo/Duo matches, excluding remakes. Each player's champions show games, wins/losses, win rate, average kills/deaths/assists, aggregate KDA, average CS, average CS per minute, and average end-of-game champion XP. CS includes lane minions and neutral monsters. CS/min is the arithmetic mean of each game's rate; KDA is total kills plus assists divided by total deaths, with zero deaths displayed as Perfect. Missing fields are excluded individually and their sample counts remain visible.
+Each player's champion list shows only champion portraits, names, KDA, win rate, and game count from opposing-team Solo/Duo matches. Every champion used in those matches is shown, ordered by game count. Champion filters, sorting controls, detailed match history, CS/XP metrics, and the 24-hour chart filter are omitted to keep the interface concise.
 
-Filter either player's champion to inspect a specific pairing; sort by games, KDA, win rate, or CS/min. Saved opponent matches are backfilled with MATCH-V5 summary stats in batches of six, retaining existing results and rate-limit backoff. No timeline endpoint is used. Champion portraits come from CommunityDragon and have an initials fallback when no champion ID is available. An active Riot API key is required for live data and backfill.
+KDA is total kills plus assists divided by total deaths; zero deaths displays Perfect. The backend retains MATCH-V5 summary data and bounded legacy backfill. Champion portraits come from CommunityDragon. An active Riot API key is required for live data.
