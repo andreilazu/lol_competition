@@ -2,9 +2,9 @@ const players=[{name:'Respectful Jew',tag:'miy23',slug:'Respectful%2BJew-miy23'}
 const initial={at:'2026-11-17T13:55:00Z',source:'Public snapshot · League of Graphs',players:[{tier:'GRANDMASTER',rank:'I',lp:1301,wins:397,losses:342},{tier:'GRANDMASTER',rank:'I',lp:1663,wins:285,losses:235}]};
 let inFlight, matchupFlight;
 const json=(body,status=200)=>new Response(JSON.stringify(body),{status,headers:{'Content-Type':'application/json','Cache-Control':'no-store'}});
-async function riot(url,key){const r=await fetch(url,{headers:{'X-Riot-Token':key},signal:AbortSignal.timeout(15000)});if(!r.ok){const e=new Error(({401:'Riot rejected this API key.',403:'The server’s Riot API key is invalid or expired. The site owner needs to replace it.',404:'Account or ranked data not found on EUNE.',429:'Riot rate limit reached. Please wait and retry.'})[r.status]||'Riot is temporarily unavailable. Please retry.');e.status=r.status===429?429:502;e.retryAfter=Math.max(5,Number(r.headers.get('Retry-After'))||120);throw e;}return r.json();}
+async function riot(url,key){const r=await fetch(url,{headers:{'X-Riot-Token':key},signal:AbortSignal.timeout(15000)});if(!r.ok){const e=new Error(({401:'Riot rejected this API key.',403:'The server’s Riot API key is invalid or expired. The site owner needs to replace it.',404:'Account or ranked data not found on EUNE.',429:'Riot rate limit reached. Please wait and retry.'})[r.status]||'Riot is temporarily unavailable. Please retry.');e.riotStatus=r.status;e.status=r.status===429?429:502;e.retryAfter=Math.max(5,Number(r.headers.get('Retry-After'))||120);throw e;}return r.json();}
 async function accounts(env,key){const old=await env.BUCKET?.get('accounts.json');if(old)return old.json();const ids=await Promise.all(players.map(p=>riot('https://europe.api.riotgames.com/riot/account/v1/accounts/by-riot-id/'+encodeURIComponent(p.name)+'/'+p.tag,key)));await env.BUCKET?.put('accounts.json',JSON.stringify(ids));return ids;}
-function publicMatchups(s){return {checkedAt:s.checkedAt,counts:s.ids.map(a=>a.length),exhausted:s.exhausted,pending:s.pending.length,records:s.records,season:s.season,error:s.error||null,retryAt:s.retryAt||null};}
+function publicMatchups(s){return {checkedAt:s.checkedAt,counts:s.ids.map(a=>a.length),exhausted:s.exhausted,pending:s.pending.length,records:s.records,season:s.season,historyScope:s.historyScope||'season',unavailable:s.unavailable?.length||0,rateLimited:Boolean(s.rateLimited),error:s.error||null,retryAt:s.retryAt||null};}
 async function matchups(request,env){
  const deadline=env.MATCHUP_BUDGET_MS?Date.now()+env.MATCHUP_BUDGET_MS:Infinity;
  if(!['GET','POST'].includes(request.method))return json({error:'Method not allowed'},405);
@@ -12,7 +12,10 @@ async function matchups(request,env){
  if(matchupFlight)return (await matchupFlight).clone();
  matchupFlight=(async()=>{let state;try{
   if(!env.BUCKET)return json({error:'Shared storage is unavailable.'},503);
-  const season=new Date().getUTCFullYear();const stored=await env.BUCKET.get('matchups-'+season+'.json');state=stored?await stored.json():{season,ids:[[],[]],offset:[0,0],exhausted:[false,false],processed:[],pending:[],records:[],checkedAt:null};
+  const season=new Date().getUTCFullYear();const stored=await env.BUCKET.get('matchups-all.json')||await env.BUCKET.get('matchups-'+season+'.json');state=stored?await stored.json():{season,ids:[[],[]],offset:[0,0],exhausted:[false,false],processed:[],pending:[],records:[],checkedAt:null};
+  if(state.historyScope!=='available'){
+   state.historyScope='available';state.offset=[0,0];state.exhausted=[false,false];state.scanEndTime=Math.floor(Date.now()/1000);state.checkedAt=null;
+  }
   if(request.method==='GET')return json(publicMatchups(state));
   // Backfill stored match summaries in bounded batches without losing results.
   state.pending=[...new Set([...state.pending,...state.records.filter(r=>r.kind==='opponents'&&r.statsVersion!==1).map(r=>r.id)])];
@@ -23,14 +26,23 @@ async function matchups(request,env){
    for(let i=0;i<2;i++){
     if(older&&state.exhausted[i])continue;
     const start=older?state.offset[i]:0;
-    const ids=await riot('https://europe.api.riotgames.com/lol/match/v5/matches/by-puuid/'+encodeURIComponent(aa[i].puuid)+'/ids?type=ranked&startTime='+Math.floor(Date.UTC(season,0,1)/1000)+'&start='+start+'&count=100',key);
-    state.ids[i]=[...new Set([...state.ids[i],...ids])];state.offset[i]=Math.max(state.offset[i],start+ids.length);if(older||!state.checkedAt)state.exhausted[i]=ids.length<100;
+    const ids=await riot('https://europe.api.riotgames.com/lol/match/v5/matches/by-puuid/'+encodeURIComponent(aa[i].puuid)+'/ids?type=ranked'+(older?'&endTime='+state.scanEndTime:'')+'&start='+start+'&count=100',key);
+    state.ids[i]=[...new Set([...state.ids[i],...ids])];if(older)state.offset[i]=start+ids.length;if(older||!state.checkedAt)state.exhausted[i]=ids.length<100;
+    // Save each cursor so a rate limit on the other account cannot discard progress.
+    await env.BUCKET.put('matchups-all.json',JSON.stringify(state));
    }
    const other=new Set(state.ids[1]),done=new Set(state.processed);state.pending=state.ids[0].filter(id=>other.has(id)&&!done.has(id));state.checkedAt=new Date().toISOString();
   }
-  state.error=null;state.retryAt=null;
+  // Recompute even after a partial page scan was interrupted by rate limiting.
+  const other=new Set(state.ids[1]),done=new Set(state.processed);state.pending=[...new Set([...state.pending,...state.ids[0].filter(id=>other.has(id)&&!done.has(id))])];
+  state.error=null;state.retryAt=null;state.rateLimited=false;
   for(let n=0;n<6&&state.pending.length&&Date.now()<deadline;n++){
-   const id=state.pending[0];const match=await riot('https://europe.api.riotgames.com/lol/match/v5/matches/'+encodeURIComponent(id),key);const info=match.info;
+   const id=state.pending[0];let match;
+   try{match=await riot('https://europe.api.riotgames.com/lol/match/v5/matches/'+encodeURIComponent(id),key);}catch(e){
+    if(e.riotStatus!==404)throw e;
+    state.unavailable=[...new Set([...(state.unavailable||[]),id])];if(!state.processed.includes(id))state.processed.push(id);state.pending.shift();continue;
+   }
+   const info=match.info;
    const pp=aa.map(a=>info.participants.find(p=>p.puuid===a.puuid));
    if(pp.every(Boolean)&&[420,440].includes(info.queueId)){
     const duration=info.gameEndTimestamp?Math.round((info.gameEndTimestamp-info.gameStartTimestamp)/1000):info.gameDuration;
@@ -42,8 +54,8 @@ async function matchups(request,env){
    }
    if(!state.processed.includes(id))state.processed.push(id);state.pending.shift();
   }
-  await env.BUCKET.put('matchups-'+season+'.json',JSON.stringify(state));return json(publicMatchups(state));
- }catch(e){if(state){state.error=e.message;state.retryAt=new Date(Date.now()+(e.status===429?e.retryAfter:30)*1000).toISOString();await env.BUCKET.put('matchups-'+state.season+'.json',JSON.stringify(state));return json(publicMatchups(state));}return json({error:e.message},e.status||502);}finally{matchupFlight=null;}})();return (await matchupFlight).clone();
+  await env.BUCKET.put('matchups-all.json',JSON.stringify(state));return json(publicMatchups(state));
+ }catch(e){if(state){state.error=e.message;state.rateLimited=e.status===429;state.retryAt=new Date(Date.now()+(e.status===429?e.retryAfter:30)*1000).toISOString();await env.BUCKET.put('matchups-all.json',JSON.stringify(state));return json(publicMatchups(state));}return json({error:e.message},e.status||502);}finally{matchupFlight=null;}})();return (await matchupFlight).clone();
 }
 export default {async fetch(request,env){const u=new URL(request.url);if(u.pathname==='/api/matchups')return matchups(request,env);if(u.pathname==='/api/history'){const items=env?.BUCKET?await env.BUCKET.list({prefix:'snapshots/',limit:1000}):{objects:[]};const rows=await Promise.all(items.objects.map(async o=>(await env.BUCKET.get(o.key)).json()));return json({snapshots:rows});}if(u.pathname==='/api/stats'){
  if(request.method!=='POST')return json({error:'Use POST.'},405);
@@ -61,7 +73,7 @@ const html=String.raw`<!doctype html><html lang="en"><head><meta charset="utf-8"
 </style></head><body><header><div class="header-inner"><div><h1 class="brand">Schizo <span>Battle</span></h1><p class="queue">Ranked Solo / Duo · EUNE</p></div><button class="btn primary" id="refresh">Refresh</button></div></header><main><p class="error" id="error" role="status" hidden></p><section class="panel h2h-panel" aria-labelledby="h2h-title"><div class="section-head"><h2 id="h2h-title">Head-to-head</h2><button class="btn" id="scanOlder" hidden>Load older matches</button></div><div id="h2h" aria-live="polite"><p class="scope">Loading results…</p></div></section><section class="champion-section" aria-labelledby="champion-title"><h2 id="champion-title">Champions head-to-head</h2><div id="champion-stats" class="champion-grid" aria-live="polite"><p class="scope">Loading champion stats…</p></div></section><div class="cards" id="cards"></div><section aria-labelledby="chart-title"><div class="section-head"><h2 id="chart-title">LP over time</h2><div class="controls" aria-label="Time period"><button class="btn active" data-days="7">7 days</button><button class="btn" data-days="30">30 days</button><button class="btn" data-days="0">All</button></div></div><div class="panel"><div class="legend"><span><i class="dot"></i>Respectful Jew</span><span><i class="dot" style="background:var(--b)"></i>regelepetras2006</span></div><div class="chart" id="chart"></div><p class="chart-note" id="chart-note"></p></div></section><footer>Not affiliated with Riot Games.</footer></main>
 <script>const PLAYERS=${JSON.stringify(players)},INITIAL=${JSON.stringify(initial)};
 const ARCHIVE=[{"player":0,"url":"https://op.gg/lol/summoners/eune/Respectful%20Jew-miy23","observations":[["2026-11-05",622],["2026-11-07",729],["2026-11-08",821],["2026-11-11",971],["2026-11-12",911],["2026-11-13",1031],["2026-11-14",1151],["2026-11-16",1151]]},{"player":1,"url":"https://op.gg/lol/summoners/eune/regelepetras2006-smrfm","observations":[["2026-11-07",1718],["2026-11-08",1742],["2026-11-09",1766],["2026-11-10",1638],["2026-11-13",1606],["2026-11-14",1553],["2026-11-16",1635]]}];
-let days=7,busy=false,matchupBusy=false,matchupData=null;let data={solo:[]};
+let days=7,busy=false,matchupBusy=false,matchupData=null,olderScanning=false,matchupTimer=null;let data={solo:[]};
 const $=id=>document.getElementById(id);const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const fmt=n=>n.toLocaleString('en-US');const latest=()=>data.solo.at(-1);const wr=p=>p.wins+p.losses?100*p.wins/(p.wins+p.losses):null;
 function showError(text){$('error').textContent=text;$('error').hidden=!text;}
@@ -111,10 +123,33 @@ function renderMatchups(){
  if(!matchupData)return;const d=matchupData,versus=d.records.filter(r=>r.queue==='solo'&&r.kind==='opponents'&&r.winner!==null).sort((a,b)=>b.at.localeCompare(a.at));
  const wins=[0,1].map(i=>versus.filter(r=>r.winner===i).length),total=versus.length,rates=wins.map(w=>total?(w/total*100).toFixed(1)+'%':'—');
  renderChampions(versus);
- $('h2h').innerHTML='<div class="h2h-score"><div class="h2h-player"><div class="who">'+PLAYERS[0].name+'</div><strong>'+rates[0]+'</strong><span class="record">'+wins[0]+' wins</span></div><div class="h2h-total"><b>'+wins[0]+' : '+wins[1]+'</b><span>'+total+' direct matchups</span></div><div class="h2h-player"><div class="who">'+PLAYERS[1].name+'</div><strong>'+rates[1]+'</strong><span class="record">'+wins[1]+' wins</span></div></div><div class="h2h-bar"><span style="width:'+(total?wins[0]/total*100:0)+'%"></span><span style="width:'+(total?wins[1]/total*100:0)+'%"></span></div><p class="scope">'+d.season+' · Opposing teams only'+(!d.exhausted.every(Boolean)?' · Partial history':'')+(d.pending?' · Checking more matches…':'')+(d.error?' · '+esc(d.error):'')+'</p>';
- $('scanOlder').hidden=d.exhausted.every(Boolean)&&!d.pending;$('scanOlder').disabled=matchupBusy||d.pending>0||Boolean(d.retryAt&&Date.parse(d.retryAt)>Date.now());
+ $('h2h').innerHTML='<div class="h2h-score"><div class="h2h-player"><div class="who">'+PLAYERS[0].name+'</div><strong>'+rates[0]+'</strong><span class="record">'+wins[0]+' wins</span></div><div class="h2h-total"><b>'+wins[0]+' : '+wins[1]+'</b><span>'+total+' direct matchups</span></div><div class="h2h-player"><div class="who">'+PLAYERS[1].name+'</div><strong>'+rates[1]+'</strong><span class="record">'+wins[1]+' wins</span></div></div><div class="h2h-bar"><span style="width:'+(total?wins[0]/total*100:0)+'%"></span><span style="width:'+(total?wins[1]/total*100:0)+'%"></span></div><p class="scope" role="status">'+(matchupBusy||olderScanning?'Searching… · ':'')+d.counts.map(fmt).join(' / ')+' games searched'+(versus.length?' · Oldest matchup: '+new Date(versus.at(-1).at).toLocaleDateString():'')+(d.exhausted.every(Boolean)&&!d.pending?' · End of available history':'')+(d.pending?' · '+d.pending+' shared matches to check':'')+(d.error?' · '+esc(d.error):'')+'</p>';
+ $('scanOlder').hidden=d.exhausted.every(Boolean)&&!d.pending&&!d.error;
+ $('scanOlder').disabled=matchupBusy||olderScanning||Boolean(d.retryAt&&Date.parse(d.retryAt)>Date.now());
+ $('scanOlder').textContent=olderScanning?'Searching…':d.error?'Retry search':'Load older matches';
 }
-async function loadMatchups(older=false){if(matchupBusy)return;matchupBusy=true;try{const r=await fetch('/api/matchups'+(older?'?older=1':''),{method:'POST'});const d=await r.json();if(!r.ok)throw Error(d.error||'Match history unavailable.');matchupData=d;renderMatchups();if(d.pending&&!d.error)setTimeout(()=>loadMatchups(),3000);}catch(e){if(!matchupData){$('h2h').innerHTML='<p class="scope">'+esc(e.message)+'</p>';$('champion-stats').innerHTML='<p class="scope">Champion stats are unavailable until match history can load.</p>';}}finally{matchupBusy=false;if(matchupData)renderMatchups();}}
+async function loadMatchups(older=false){
+ if(matchupBusy)return;clearTimeout(matchupTimer);matchupBusy=true;if(matchupData)renderMatchups();
+ let next=null,delay=3000;
+ try{
+  const r=await fetch('/api/matchups'+(older?'?older=1':''),{method:'POST'});const d=await r.json();
+  if(!r.ok)throw Error(d.error||'Match history unavailable.');
+  matchupData=d;
+  if(d.rateLimited&&d.retryAt&&(olderScanning||d.pending)){
+   next=olderScanning;delay=Math.max(3000,Date.parse(d.retryAt)-Date.now()+1000);
+  }else if(d.error){olderScanning=false;}
+  else if(olderScanning&&(!d.exhausted.every(Boolean)||d.pending)){next=true;}
+  else{olderScanning=false;if(d.pending)next=false;}
+ }catch(e){
+  olderScanning=false;
+  if(matchupData){matchupData.error=e.message;matchupData.retryAt=null;}
+  else{$('h2h').innerHTML='<p class="scope">'+esc(e.message)+'</p>';$('scanOlder').hidden=false;$('scanOlder').disabled=false;$('scanOlder').textContent='Retry search';$('champion-stats').innerHTML='<p class="scope">Match history unavailable.</p>';}
+ }finally{
+  matchupBusy=false;if(matchupData)renderMatchups();
+  if(next!==null)matchupTimer=setTimeout(()=>loadMatchups(next),delay);
+  else if(matchupData?.retryAt&&Date.parse(matchupData.retryAt)>Date.now())matchupTimer=setTimeout(renderMatchups,Date.parse(matchupData.retryAt)-Date.now()+1000);
+ }
+}
 async function loadHistory(){const r=await fetch('/api/history');if(!r.ok)throw Error('LP history unavailable.');const h=await r.json();data={solo:h.snapshots.filter(s=>Array.isArray(s.queues?.solo)).sort((a,b)=>a.at.localeCompare(b.at)).map(s=>({at:s.at,source:s.source,players:s.queues.solo}))};}
 async function refresh(){if(busy)return;busy=true;$('refresh').disabled=true;$('refresh').textContent='Refreshing…';try{const r=await fetch('/api/stats',{method:'POST'});const d=await r.json();if(!r.ok)throw Error(d.error||'Could not refresh.');await loadHistory();if(!data.solo.some(s=>s.at===d.at))data.solo.push({at:d.at,source:d.source,players:d.queues.solo});showError('');render();}catch(e){showError(e.message);}finally{busy=false;$('refresh').disabled=false;$('refresh').textContent='Refresh';}}
-$('refresh').onclick=()=>{refresh();loadMatchups();};$('scanOlder').onclick=()=>loadMatchups(true);document.querySelectorAll('[data-days]').forEach(b=>b.onclick=()=>{days=Number(b.dataset.days);document.querySelectorAll('[data-days]').forEach(x=>x.classList.toggle('active',x===b));draw();});setInterval(()=>{if(!document.hidden){refresh();loadMatchups();}},300000);render();loadHistory().then(render).catch(()=>{}).finally(refresh);loadMatchups();</script></body></html>`;
+$('refresh').onclick=()=>{refresh();loadMatchups();};$('scanOlder').onclick=()=>{if(matchupBusy)return;olderScanning=true;loadMatchups(true);};document.querySelectorAll('[data-days]').forEach(b=>b.onclick=()=>{days=Number(b.dataset.days);document.querySelectorAll('[data-days]').forEach(x=>x.classList.toggle('active',x===b));draw();});setInterval(()=>{if(!document.hidden){refresh();if(!olderScanning)loadMatchups();}},300000);render();loadHistory().then(render).catch(()=>{}).finally(refresh);loadMatchups();</script></body></html>`;

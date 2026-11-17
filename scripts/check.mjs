@@ -23,12 +23,12 @@ globalThis.fetch=async(url)=>{matchCalls++;if(url.includes('by-riot-id'))return 
 const h=await(await worker.fetch(req('/api/matchups','POST'),env)).json();assert.equal(h.records.length,5);assert.equal(h.records.filter(r=>r.kind==='opponents'&&r.queue==='solo').length,2);assert.equal(h.records.filter(r=>r.kind==='teammates').length,1);assert.equal(h.records.filter(r=>r.kind==='remake').length,1);assert.deepEqual(h.records.filter(r=>r.kind==='opponents'&&r.queue==='solo').map(r=>r.winner),[0,1]);assert.equal(h.pending,0);assert.deepEqual(h.counts,[5,5]);assert.ok(h.exhausted.every(Boolean));
 const before=matchCalls;const again=await(await worker.fetch(req('/api/matchups','POST'),env)).json();assert.equal(matchCalls,before);assert.equal(again.records.length,5);assert.ok(!JSON.stringify(h).includes(env.RIOT_API_KEY));assert.ok(!JSON.stringify(h).includes('puuid'));
 assert.equal(h.records[0].stats[0].cs,180);assert.equal(h.records[0].stats[0].xp,15000);
-const migrationKey='matchups-'+new Date().getUTCFullYear()+'.json';const legacy=JSON.parse(store.get(migrationKey));delete legacy.records[0].stats;delete legacy.records[0].statsVersion;store.set(migrationKey,JSON.stringify(legacy));
+const migrationKey='matchups-all.json';const legacy=JSON.parse(store.get(migrationKey));delete legacy.records[0].stats;delete legacy.records[0].statsVersion;store.set(migrationKey,JSON.stringify(legacy));
 const migrated=await(await worker.fetch(req('/api/matchups','POST'),env)).json();assert.equal(matchCalls,before+1);assert.equal(migrated.records.length,5);assert.equal(migrated.records[0].stats[0].cs,180);assert.equal(new Set(JSON.parse(store.get(migrationKey)).processed).size,5);
 const crossOrigin=new Request('https://test.example/api/matchups',{method:'POST',headers:{Origin:'https://other.example'}});assert.equal((await worker.fetch(crossOrigin,env)).status,403);
 // Persist backoff and keep completed results if Riot throttles a wider scan.
 globalThis.fetch=async()=>new Response('{}',{status:429,headers:{'Retry-After':'60'}});
-const stateKey='matchups-'+new Date().getUTCFullYear()+'.json';const saved=JSON.parse(store.get(stateKey));saved.exhausted=[false,false];store.set(stateKey,JSON.stringify(saved));
+const stateKey='matchups-all.json';const saved=JSON.parse(store.get(stateKey));saved.exhausted=[false,false];store.set(stateKey,JSON.stringify(saved));
 const throttled=await(await worker.fetch(req('/api/matchups?older=1','POST'),env)).json();assert.ok(Date.parse(throttled.retryAt)>Date.now()+50000);assert.equal(throttled.records.length,5);
 console.log('Passed: opposing-team results, teammates/remakes excluded, queue separation, deduplication, shared cache, origin protection, Retry-After, secret exclusion.');
 
@@ -37,14 +37,14 @@ const body=html.split('<script>')[0];
 assert.ok(body.includes('<title>Schizo Battle</title>'));
 for(const text of ['Ranked Flex','Ladder lead','Win rate gap','Snapshots recorded','Every win counts','RIFT RIVALS','LP change since tracking','Ladder points','Riot API �'])assert.ok(!body.includes(text),'Removed UI: '+text);
 const elements=new Map();const element=id=>{if(!elements.has(id))elements.set(id,{innerHTML:'',textContent:'',disabled:false,hidden:false});return elements.get(id);};
-const context=vm.createContext({document:{getElementById:element,querySelectorAll:()=>[]},fetch:()=>new Promise(()=>{}),setInterval:()=>{},setTimeout:()=>{},console});
+const context=vm.createContext({document:{getElementById:element,querySelectorAll:()=>[]},fetch:()=>new Promise(()=>{}),setInterval:()=>{},setTimeout:()=>{},clearTimeout:()=>{},console});
 vm.runInContext(html.match(/<script>([\s\S]*?)<\/script>/)[1],context);
 vm.runInContext('days=1',context);
 const at=Date.now()-3600000;const make=(offset,lp)=>({at:new Date(at+offset*60000).toISOString(),source:'Riot API',players:[{tier:'GRANDMASTER',rank:'I',lp,wins:40,losses:20},{tier:'GRANDMASTER',rank:'I',lp:1663,wins:30,losses:20}]});
 vm.runInContext('data='+JSON.stringify({solo:[make(0,1301)]})+';draw()',context);assert.ok(element('chart').innerHTML.includes('1,301 LP'));assert.ok(element('chart').innerHTML.includes('1,663 LP'));assert.ok(!element('chart').innerHTML.includes('<path'));assert.ok(element('chart-note').innerHTML.includes('First reading'));
 vm.runInContext('data='+JSON.stringify({solo:[make(0,1301),make(1,1325),make(10,1290)]})+';draw()',context);const chart=element('chart').innerHTML;assert.ok(chart.includes('cx="138"'));assert.ok(chart.includes('cx="795"'));assert.ok(chart.includes('1,325 LP'));assert.equal((chart.match(/data-player=/g)||[]).length,2);assert.ok(chart.includes('1,663 LP'));assert.ok(!chart.includes('4,463'));assert.ok(!chart.includes('+0'));
 vm.runInContext('data='+JSON.stringify({solo:[make(0,1301),make(10,1301)]})+';draw()',context);const flat=element('chart').innerHTML;const paths=[...flat.matchAll(/<path[^>]+d="([^"]+)"/g)].map(m=>m[1]);assert.equal(paths.length,2);assert.notEqual(paths[0],paths[1],'Two unchanged LP totals must remain on separate lines.');
-vm.runInContext('matchupData='+JSON.stringify(h)+';renderMatchups()',context);assert.ok(element('h2h').innerHTML.includes('50.0%'));assert.ok(element('h2h').innerHTML.includes('2 direct matchups'));assert.ok(element('h2h').innerHTML.includes('Opposing teams only'));assert.ok(!element('h2h').innerHTML.includes('<details'));assert.ok(element('scanOlder').hidden);
+vm.runInContext('matchupData='+JSON.stringify(h)+';renderMatchups()',context);assert.ok(element('h2h').innerHTML.includes('50.0%'));assert.ok(element('h2h').innerHTML.includes('2 direct matchups'));assert.ok(element('h2h').innerHTML.includes('games searched'));assert.ok(!element('h2h').innerHTML.includes('<details'));assert.ok(element('scanOlder').hidden);
 console.log('Passed: Solo/Duo-only interface, new name, removed clutter, actual LP totals, two distinct player lines, time spacing, and head-to-head rendering.');
 
 // Unequal match lengths and deaths distinguish means from pooled ratios.
