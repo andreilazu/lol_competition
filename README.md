@@ -1,6 +1,6 @@
 # Schizo Battle
 
-The `/whos-fault/` page compares aggregate KDA and deaths per game in shared Solo/Duo losses. Its clearly labeled random verdict blames Respectful Jew with probability 1/3 and regelepetras2006 with probability 2/3, independently on each click. The verdict is a joke, not a statistical cause of defeat. Stored teammate matches gain an explicit `teamWon` field through the existing bounded backfill so wins, losses, and remakes are separated correctly.
+The `/whos-fault/` page lists shared Solo/Duo losses, newest first, with both champion portraits, each player's K/D/A and KDA ratio, and a short joke verdict beneath each match. Each new match verdict blames Respectful Jew with probability 1/3 and regelepetras2006 with probability 2/3, with player-specific random reasons. Verdicts persist in browser storage across reloads. Any precise timestamp in a joke is generated within the match duration; the page labels these verdicts "Just for fun". Stored teammate matches gain an explicit `teamWon` field through the existing bounded backfill so wins, losses, and remakes are separated correctly.
 
 ## Deploy to Netlify
 

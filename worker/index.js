@@ -161,43 +161,67 @@ async function loadMatchups(older=false,force=false){
 async function loadHistory(){const r=await fetch('/api/history');if(!r.ok)throw Error('LP history unavailable.');const h=await r.json();data={solo:h.snapshots.filter(s=>Array.isArray(s.queues?.solo)).sort((a,b)=>a.at.localeCompare(b.at)).map(s=>({at:s.at,source:s.source,players:s.queues.solo}))};}
 async function refresh(){if(busy)return;busy=true;$('refresh').disabled=true;$('refresh').textContent='Refreshing…';try{const r=await fetch('/api/stats',{method:'POST'});const d=await r.json();if(!r.ok)throw Error(d.error||'Could not refresh.');await loadHistory();if(!data.solo.some(s=>s.at===d.at))data.solo.push({at:d.at,source:d.source,players:d.queues.solo});showError('');render();}catch(e){showError(e.message);}finally{busy=false;$('refresh').disabled=false;$('refresh').textContent='Refresh';}}
 $('refresh').onclick=()=>{refresh();loadMatchups(false,true);};$('scanOlder').onclick=()=>{if(matchupBusy)return;olderScanning=true;loadMatchups(true);};document.querySelectorAll('[data-days]').forEach(b=>b.onclick=()=>{days=Number(b.dataset.days);document.querySelectorAll('[data-days]').forEach(x=>x.classList.toggle('active',x===b));draw();});setInterval(()=>{if(!document.hidden){refresh();if(!olderScanning)loadMatchups();}},300000);render();loadHistory().then(render).catch(()=>{}).finally(refresh);loadMatchups();</script></body></html>`;
-const faultHtml=String.raw`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="description" content="Duo losses, two suspects, one very biased jury."><title>Who's fault is it? · Schizo Battle</title><style>${html.match(/<style>([\s\S]*?)<\/style>/)[1]}
-.fault-main{max-width:1000px}.fault-intro{text-align:center;padding:34px 0 26px}.eyebrow{font-size:10px;letter-spacing:2px;color:var(--a);font-weight:700}.fault-title{font:700 clamp(44px,7vw,76px)/1 'Barlow Condensed';margin:12px 0}.fault-intro p{color:var(--muted);font-size:13px}.verdict-panel{text-align:center;position:relative;overflow:hidden;border-color:#465838;padding:42px 24px;background:radial-gradient(ellipse at top,color-mix(in srgb,var(--suspect,var(--a)) 10%,#121a1f),#121a1f 75%)}.verdict-label{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:1.5px}.verdict-name{font:700 clamp(36px,6vw,64px)/1.15 'Barlow Condensed';color:var(--suspect,var(--a));margin:16px 0 6px;overflow-wrap:anywhere}.verdict-copy{color:var(--muted);font-size:13px;min-height:20px}.blame-button{margin-top:26px;padding:14px 24px;font-size:13px}.random-note{font-size:10px;color:var(--muted);margin-top:14px}.duo-section{margin-top:30px}.duo-section .section-head{margin-bottom:14px}.duo-note{color:var(--muted);font-size:11px}.duo-cards{display:grid;grid-template-columns:1fr 1fr;gap:20px}.duo-player{border-top:2px solid var(--c)}.duo-player h3{font:600 28px 'Barlow Condensed';color:var(--c);overflow-wrap:anywhere}.duo-metrics{display:flex;gap:38px;margin-top:22px}.duo-metrics strong{display:block;font-size:26px;font-weight:600}.duo-metrics small{display:block;font-size:11px;color:var(--muted);margin-top:5px}.verdict-pop{animation:verdict-in .25s ease-out}@keyframes verdict-in{from{opacity:.3;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}@media(prefers-reduced-motion:reduce){.verdict-pop{animation:none}}@media(max-width:600px){.duo-cards{grid-template-columns:1fr}.fault-intro{padding-top:18px}.verdict-panel{padding:30px 18px}.duo-section .section-head{align-items:flex-start}.duo-metrics{justify-content:space-between}}
-</style></head><body><header><div class="header-inner"><a class="brand" href="/" style="text-decoration:none">Schizo <span>Battle</span></a><nav class="site-nav" aria-label="Main navigation"><a href="/">Overview</a><a href="/whos-fault/" aria-current="page">Who's fault?</a></nav></div></header><main class="fault-main"><div class="fault-intro"><span class="eyebrow">THE DUO TRIBUNAL</span><h1 class="fault-title">Who's fault is it?</h1><p>Lost together. Blame someone.</p></div><section class="panel verdict-panel" id="verdict-panel" aria-label="Blame verdict"><p class="verdict-label">Two suspects. One verdict.</p><div id="verdict" role="status" aria-live="polite" aria-atomic="true"><h2 class="verdict-name">Someone ran it down.</h2><p class="verdict-copy">Let's settle this.</p></div><button class="btn primary blame-button" id="blame">Find the culprit</button><p class="random-note">Random verdict · Just for fun</p></section><section class="duo-section" aria-labelledby="duo-title"><div class="section-head"><h2 id="duo-title">When they lose together</h2><p class="duo-note" id="duo-note" role="status">Loading duo games…</p></div><div class="duo-cards" id="duo-stats"></div></section><footer>Not affiliated with Riot Games.</footer></main><script>
+const faultHtml=String.raw`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="description" content="Duo losses and deeply unserious verdicts."><title>Who's fault is it? · Schizo Battle</title><style>${html.match(/<style>([\s\S]*?)<\/style>/)[1]}
+.fault-main{max-width:850px}.fault-intro{display:flex;justify-content:space-between;align-items:end;gap:16px;margin:10px 0 28px}.fault-title{font:600 clamp(32px,6vw,46px)/1.1 'Barlow Condensed'}.fault-intro p{color:var(--muted);font-size:12px;margin-top:8px}.joke-label{color:var(--muted);font-size:10px;white-space:nowrap;border:1px solid var(--line);padding:6px 9px;border-radius:20px}.loss-feed{display:grid;gap:16px}.loss-card{padding:0;overflow:hidden;transition:border-color .18s ease,transform .18s ease;animation:card-in .3s ease both;animation-delay:calc(min(var(--order),5)*35ms)}.loss-card:hover{border-color:#435159;transform:translateY(-1px)}.loss-meta{display:flex;align-items:center;justify-content:space-between;padding:13px 20px;border-bottom:1px solid var(--line);font-size:10px;color:var(--muted)}.defeat{color:#eda8a4;font-weight:600;display:inline-flex;align-items:center;gap:7px}.defeat:before{content:'';width:5px;height:5px;border-radius:50%;background:#d87973}.match-players{display:grid;grid-template-columns:1fr 1fr;gap:22px;padding:20px}.match-player{display:flex;align-items:center;gap:12px;min-width:0}.match-player:last-child{border-left:1px solid var(--line);padding-left:22px}.portrait{position:relative;display:grid;place-items:center;width:50px;height:50px;border:1px solid #3c4a50;border-radius:8px;overflow:hidden;background:#263139;flex-shrink:0;color:var(--c);font-weight:700}.portrait img{position:absolute;width:100%;height:100%;object-fit:cover}.match-player-info{min-width:0}.summoner{color:var(--c);font-size:10px;overflow-wrap:anywhere;margin-bottom:4px}.champion{font-size:14px;font-weight:600}.game-kda{display:flex;align-items:baseline;gap:6px;margin-top:7px;font-size:17px;font-weight:600;font-variant-numeric:tabular-nums}.game-kda .slash{font-size:11px;color:#64757d;font-weight:400}.game-kda .deaths{color:#eda8a4}.game-kda small{font-size:10px;color:var(--muted);font-weight:400;margin-left:6px}.match-verdict{padding:14px 20px;border-top:1px solid var(--line);border-left:3px solid var(--culprit);background:color-mix(in srgb,var(--culprit) 4%,var(--panel))}.match-verdict strong{font-size:12px;color:var(--culprit);font-weight:600}.match-verdict p{color:#c1cbd0;font-size:12px;line-height:1.5;margin-top:5px}.feed-status{font-size:11px;color:var(--muted);margin-top:16px;line-height:1.6}.feed-skeleton{height:196px;background:linear-gradient(110deg,#121a1f 25%,#1a252b 45%,#121a1f 65%);background-size:200% 100%;animation:shimmer 1.5s ease infinite;border:1px solid var(--line);border-radius:8px}.empty-feed{padding:32px;text-align:center;color:var(--muted);font-size:13px}.retry{margin-top:12px}.loss-count{font-variant-numeric:tabular-nums}@keyframes card-in{from{opacity:0;transform:translateY(7px)}to{opacity:1;transform:translateY(0)}}@keyframes shimmer{to{background-position:-200% 0}}@media(prefers-reduced-motion:reduce){.loss-card,.feed-skeleton{animation:none}.loss-card{transition:none}}@media(max-width:540px){.fault-main{padding:20px 14px}.fault-intro{align-items:start;gap:10px;margin-bottom:20px}.match-players{padding:16px 14px;gap:12px}.match-player{gap:9px}.match-player:last-child{padding-left:12px}.portrait{width:40px;height:40px;border-radius:6px}.champion{font-size:12px}.game-kda{font-size:15px;gap:4px;flex-wrap:wrap}.game-kda small{font-size:9px;margin-left:3px}.loss-meta{padding:12px 14px}.match-verdict{padding:13px 14px}.summoner{font-size:9px}.joke-label{font-size:9px}}
+</style></head><body><header><div class="header-inner"><a class="brand" href="/" style="text-decoration:none">Schizo <span>Battle</span></a><nav class="site-nav" aria-label="Main navigation"><a href="/">Overview</a><a href="/whos-fault/" aria-current="page">Who's fault?</a></nav></div></header><main class="fault-main"><div class="fault-intro"><div><h1 class="fault-title">Who's fault is it?</h1><p id="loss-count" class="loss-count">Their losses. Our verdict.</p></div><span class="joke-label">Just for fun</span></div><section class="loss-feed" id="loss-feed" aria-label="Shared losses" aria-busy="true"><div class="feed-skeleton" aria-hidden="true"></div><div class="feed-skeleton" aria-hidden="true"></div><div class="feed-skeleton" aria-hidden="true"></div></section><p class="feed-status" id="feed-status" role="status"></p><button class="btn retry" id="retry" hidden>Try again</button><footer>Not affiliated with Riot Games.</footer></main><script>
 const PLAYERS=${JSON.stringify(players)};
 const $=id=>document.getElementById(id);
 const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const verdicts=new Map();
 function chooseBlame(random=Math.random){return Math.floor(random()*3)===0?0:1;}
-function blame(){
- const culprit=chooseBlame();
- $('verdict-panel').style.setProperty('--suspect',culprit?'var(--b)':'var(--a)');
- $('verdict').innerHTML='<h2 class="verdict-name verdict-pop">'+esc(PLAYERS[culprit].name)+"'s fault.</h2><p class=\"verdict-copy\">The jury has spoken.</p>";
- $('blame').textContent='Blame again';
+function matchVerdict(match,random=Math.random){
+ const key='duo-verdict-v2:'+match.id;
+ if(verdicts.has(key))return verdicts.get(key);
+ try{const saved=JSON.parse(localStorage.getItem(key));if(saved&&[0,1].includes(saved.culprit)&&typeof saved.reason==='string'&&saved.reason.length<200){verdicts.set(key,saved);return saved;}}catch{}
+ const culprit=chooseBlame(random);
+ const reasonIndex=Math.floor(random()*6);
+ let timestamp='14:32';
+ if(culprit===1&&reasonIndex===3){
+  const end=Math.max(1,Math.min(29*60,Math.floor(Number(match.duration)||1800)-1));
+  const start=Math.min(8*60,end),second=start+Math.floor(random()*(end-start+1));
+  timestamp=Math.floor(second/60)+':'+String(second%60).padStart(2,'0');
+ }
+ const reasons=culprit===0?["Missed Q.","Didn't ward enough.","Was AFK this game.","Gapped by enemy.","Hooked the wrong problem.","Saved every cooldown for next game."]:["Lost tempo doing nothing.","Ran it down on scuttle.","Didn't linear.","Lost focus at "+timestamp+'.',"Pathed into a different game.","Reset right before the objective."];
+ const verdict={culprit,reason:reasons[reasonIndex]};verdicts.set(key,verdict);
+ try{localStorage.setItem(key,JSON.stringify(verdict));}catch{}
+ return verdict;
 }
-function lossSummary(rows,i){
- const triples=rows.map(r=>r.stats?.[i]||Object.fromEntries(['kills','deaths','assists'].map((k,j)=>[k,Number(String(r.kda?.[i]||'').split('/')[j]??NaN)]))).filter(s=>['kills','deaths','assists'].every(k=>Number.isFinite(s[k])&&s[k]>=0));
- if(!triples.length)return {kda:'—',deaths:'—'};
- const kills=triples.reduce((n,s)=>n+s.kills,0),deaths=triples.reduce((n,s)=>n+s.deaths,0),assists=triples.reduce((n,s)=>n+s.assists,0);
- return {kda:deaths?((kills+assists)/deaths).toFixed(2):'Perfect',deaths:(deaths/triples.length).toFixed(1)};
+function gameKda(match,i){
+ const stat=match.stats?.[i];
+ const values=stat?[stat.kills,stat.deaths,stat.assists]:String(match.kda?.[i]||'').split('/').map(Number);
+ if(values.length!==3||!values.every(n=>Number.isFinite(n)&&n>=0))return '<span>—</span>';
+ const [k,d,a]=values,ratio=d?((k+a)/d).toFixed(2)+' KDA':'Perfect';
+ return '<span>'+k+'</span><span class="slash">/</span><span class="deaths">'+d+'</span><span class="slash">/</span><span>'+a+'</span><small>'+ratio+'</small>';
+}
+function matchPlayer(match,i){
+ const champion=match.champions?.[i]||'Unknown',id=match.stats?.[i]?.championId;
+ const image=Number.isInteger(id)&&id>0?'<img src="https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/v1/champion-icons/'+id+'.png" alt="'+esc(champion)+'" loading="lazy" onerror="this.hidden=true">':'';
+ return '<div class="match-player" style="--c:var(--'+(i?'b':'a')+')"><span class="portrait"><span aria-hidden="true">'+esc(champion.slice(0,1))+'</span>'+image+'</span><div class="match-player-info"><p class="summoner">'+esc(PLAYERS[i].name)+'</p><h2 class="champion">'+esc(champion)+'</h2><div class="game-kda" aria-label="Kills, deaths, assists">'+gameKda(match,i)+'</div></div></div>';
 }
 function renderDuo(d){
  const together=d.records.filter(r=>r.queue==='solo'&&r.kind==='teammates');
- const losses=together.filter(r=>r.teamWon===false);
+ const losses=together.filter(r=>r.teamWon===false).sort((a,b)=>b.at.localeCompare(a.at));
  const incomplete=together.some(r=>typeof r.teamWon!=='boolean');
- $('duo-note').textContent=incomplete?'Checking duo games…':together.length+' games together · '+losses.length+' losses';
- if(incomplete&&!losses.length){$('duo-stats').innerHTML='';return;}
- if(!losses.length){$('duo-stats').innerHTML='<p class="scope">No shared losses found.</p>';return;}
- $('duo-stats').innerHTML=[0,1].map(i=>{const s=lossSummary(losses,i);return '<article class="panel duo-player" style="--c:var(--'+(i?'b':'a')+')"><h3>'+esc(PLAYERS[i].name)+'</h3><div class="duo-metrics"><div><strong>'+s.kda+'</strong><small>KDA in losses</small></div><div><strong>'+s.deaths+'</strong><small>Deaths / game</small></div></div></article>';}).join('');
+ $('loss-count').textContent=losses.length+' shared '+(losses.length===1?'loss':'losses');
+ $('loss-feed').setAttribute('aria-busy',String(incomplete));
+ $('feed-status').textContent=incomplete?'Checking duo games…':'';
+ if(!losses.length){$('loss-feed').innerHTML=incomplete?'<div class="feed-skeleton" aria-hidden="true"></div>':'<div class="panel empty-feed">No shared losses found.</div>';return;}
+ $('loss-feed').innerHTML=losses.map((match,index)=>{
+  const v=matchVerdict(match),date=new Date(match.at).toLocaleDateString(undefined,{day:'numeric',month:'short',year:'numeric'}),minutes=Math.floor(match.duration/60),seconds=String(Math.floor(match.duration%60)).padStart(2,'0');
+  return '<article class="panel loss-card" style="--order:'+index+';--culprit:var(--'+(v.culprit?'b':'a')+')" aria-label="Duo loss on '+esc(date)+'"><div class="loss-meta"><span class="defeat">Defeat</span><span><time datetime="'+esc(match.at)+'">'+esc(date)+'</time> · '+minutes+':'+seconds+'</span></div><div class="match-players">'+matchPlayer(match,0)+matchPlayer(match,1)+'</div><div class="match-verdict"><strong>'+esc(PLAYERS[v.culprit].name)+"'s fault.</strong><p>"+esc(v.reason)+'</p></div></article>';
+ }).join('');
 }
-async function loadDuo(){
+async function loadDuo(fill=false){
+ $('retry').hidden=true;
  try{
-  const r=await fetch('/api/matchups',{method:'POST'});const d=await r.json();
-  if(!r.ok)throw Error(d.error||'Duo history unavailable.');
+  const r=await fetch('/api/matchups',fill?{method:'POST'}:undefined);const d=await r.json();
+  if(!r.ok)throw Error(d.error||'Could not load matches.');
   renderDuo(d);
-  if(d.pending&&!d.error)setTimeout(loadDuo,3000);
-  else if(d.pending&&d.rateLimited&&d.retryAt)setTimeout(loadDuo,Math.max(3000,Date.parse(d.retryAt)-Date.now()+1000));
-  if(d.error)$('duo-note').textContent=d.error;
- }catch(e){$('duo-note').textContent=e.message;}
+  const missing=d.records.some(r=>r.queue==='solo'&&r.kind==='teammates'&&typeof r.teamWon!=='boolean');
+  if(!d.error&&(d.pending||missing))setTimeout(()=>loadDuo(true),fill?3000:0);
+  else if((d.pending||missing)&&d.rateLimited&&d.retryAt)setTimeout(()=>loadDuo(true),Math.max(3000,Date.parse(d.retryAt)-Date.now()+1000));
+  if(d.error){$('feed-status').textContent=d.error;$('retry').hidden=false;}
+ }catch(e){$('feed-status').textContent=e.message;$('retry').hidden=false;$('loss-feed').setAttribute('aria-busy','false');if(!$('loss-feed').querySelector('.loss-card'))$('loss-feed').innerHTML='';}
 }
-$('blame').onclick=blame;loadDuo();
+$('retry').onclick=()=>loadDuo(true);loadDuo();
 </script></body></html>`;
