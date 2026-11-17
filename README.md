@@ -1,28 +1,9 @@
-# Sites Worker ESM starter
+# Rift Rivals
 
-Use this starter for a static microsite, click counter, or simple internal UI whose state is browser-scoped. It has no dependencies and needs no install.
+Public EUNE ranked comparison for Respectful Jew #miy23 and regelepetras2006 #smrfm.
 
-Edit `worker/index.js`, then publish through the Sites hosting workflow with this starter's build and validation in `commands`.
+Run `npm run dev` for a local preview, `npm test` for checks, and `npm run build` to build the Worker. Local preview has no secret, so it shows the verified public snapshot. Set the RIOT_API_KEY runtime secret through Sites to enable live stats. Never commit the key.
 
-The build copies only `worker/index.js` and `.openai/hosting.json`. Do not add standalone asset files. Embed any essential raster bytes in `worker/index.js` and serve or reference them as a data URL.
+The server resolves Riot IDs through Europe ACCOUNT-V1 and fetches EUNE LEAGUE-V4 Solo/Duo and Flex entries. Successful results are cached in R2 for five minutes. Visitors never supply or receive the key. Shared R2 snapshots record progress when visitors refresh; there is no background collection while the site is closed. The chart retains the most recent 1,000 snapshots and compares cumulative ladder points (Master and above share a baseline). Newer snapshot keys sort first. The initial public snapshot is labeled separately and can be cached at the original source.
 
-Pass these argument arrays as `commands`:
-
-```json
-[
-  ["bash", "scripts/build.sh"],
-  ["node", "scripts/validate-artifact.mjs"]
-]
-```
-
-The deterministic build produces:
-
-```text
-dist/
-├── .openai/
-│   └── hosting.json
-└── server/
-    └── index.js
-```
-
-`dist/server/index.js` is an ES module with a default export containing `fetch(request, env, ctx)`. Edit `worker/index.js`, not the generated file under `dist/`.
+Deploy through Sites using .openai/hosting.json, R2 binding BUCKET and the server secret. Riot development keys expire after 24 hours; sustained public service needs an appropriate production key.

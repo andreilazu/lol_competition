@@ -1,9 +1,1 @@
-{
-  "name": "sites-worker-esm-starter",
-  "private": true,
-  "type": "module",
-  "scripts": {
-    "build": "bash scripts/build.sh",
-    "validate": "node scripts/validate-artifact.mjs"
-  }
-}
+{"name":"rift-rivals-eune","private":true,"type":"module","scripts":{"dev":"node scripts/dev.mjs","build":"node scripts/build.mjs","test":"node scripts/check.mjs","validate":"node scripts/validate-artifact.mjs"}}

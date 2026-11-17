@@ -1,0 +1,10 @@
+import assert from 'node:assert/strict';
+import vm from 'node:vm';
+import worker from '../worker/index.js';
+const req=(path,method='GET')=>new Request('https://test.example'+path,{method});
+const page=await worker.fetch(req('/'),{});const html=await page.text();assert.equal(page.status,200);new vm.Script(html.match(/<script>([\s\S]*?)<\/script>/)[1]);
+assert.equal((await worker.fetch(req('/api/stats','POST'),{})).status,400);
+const store=new Map();const BUCKET={async get(k){return store.has(k)?{json:async()=>JSON.parse(store.get(k))}:null;},async put(k,v){store.set(k,v);},async list(){return {objects:[...store.keys()].filter(k=>k.startsWith('snapshots/')).map(key=>({key}))};}};
+let calls=0;globalThis.fetch=async(url)=>{calls++;return Response.json(url.includes('by-riot-id')?{puuid:'test'}:[{queueType:'RANKED_SOLO_5x5',tier:'MASTER',rank:'I',leaguePoints:230,wins:40,losses:20}]);};
+const env={BUCKET,RIOT_API_KEY:'RGAPI-00000000-0000-0000-0000-000000000000'};const a=await (await worker.fetch(req('/api/stats','POST'),env)).json();assert.equal(a.queues.solo[0].lp,230);assert.equal(a.queues.flex[0].tier,'UNRANKED');assert.equal(calls,4);
+await worker.fetch(req('/api/stats','POST'),env);assert.equal(calls,4);const history=await(await worker.fetch(req('/api/history'),env)).json();assert.equal(history.snapshots.length,1);assert.ok(!JSON.stringify(history).includes(env.RIOT_API_KEY));console.log('Passed: browser script syntax, missing key, both players and queues, shared history, cache, secret exclusion.');
