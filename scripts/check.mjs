@@ -29,13 +29,16 @@ const stateKey='matchups-'+new Date().getUTCFullYear()+'.json';const saved=JSON.
 const throttled=await(await worker.fetch(req('/api/matchups?older=1','POST'),env)).json();assert.ok(Date.parse(throttled.retryAt)>Date.now()+50000);assert.equal(throttled.records.length,5);
 console.log('Passed: opposing-team results, teammates/remakes excluded, queue separation, deduplication, shared cache, origin protection, Retry-After, secret exclusion.');
 
-// Exercise actual client rendering with irregular timestamps and real LP changes.
-const elements=new Map();const element=id=>{if(!elements.has(id))elements.set(id,{innerHTML:'',textContent:'',disabled:false});return elements.get(id);};
+// Render the actual client with irregular timestamps and LP totals.
+const body=html.split('<script>')[0];
+assert.ok(body.includes('<title>Schizo Battle</title>'));
+for(const text of ['Ranked Flex','Ladder lead','Win rate gap','Snapshots recorded','Every win counts','RIFT RIVALS','LP change since tracking','Ladder points','Riot API ·'])assert.ok(!body.includes(text),'Removed UI: '+text);
+const elements=new Map();const element=id=>{if(!elements.has(id))elements.set(id,{innerHTML:'',textContent:'',disabled:false,hidden:false});return elements.get(id);};
 const context=vm.createContext({document:{getElementById:element,querySelectorAll:()=>[]},fetch:()=>new Promise(()=>{}),setInterval:()=>{},setTimeout:()=>{},console});
 vm.runInContext(html.match(/<script>([\s\S]*?)<\/script>/)[1],context);
-const at=Date.now()-3600000;const make=(offset,lp)=>({at:new Date(at+offset*60000).toISOString(),source:'Riot API',players:[{tier:'MASTER',rank:'I',lp,wins:40,losses:20},{tier:'MASTER',rank:'I',lp:300,wins:30,losses:20}]});
-vm.runInContext('data='+JSON.stringify({solo:[make(0,200)],flex:[]})+';draw()',context);assert.ok(element('chart').innerHTML.includes('One LP snapshot so far'));assert.ok(!element('chart').innerHTML.includes('<path'));
-vm.runInContext('data='+JSON.stringify({solo:[make(0,200),make(1,225),make(10,190)],flex:[]})+';draw()',context);const chart=element('chart').innerHTML;assert.ok(chart.includes('cx="135.5"'));assert.ok(chart.includes('cx="860"'));assert.ok(chart.includes('225 LP'));assert.ok(!element('chart-state').textContent.includes('LP has not changed'));
-vm.runInContext('data='+JSON.stringify({solo:[make(0,200),make(10,200)],flex:[]})+';draw()',context);assert.ok(element('chart-state').textContent.includes('LP has not changed'));
-vm.runInContext('matchupData='+JSON.stringify(h)+';renderMatchups()',context);assert.ok(element('h2h').innerHTML.includes('50.0%'));assert.ok(element('h2h').innerHTML.includes('2 direct matchups'));assert.ok(element('h2h').innerHTML.includes('1 teammate games and 1 remakes excluded'));
-console.log('Passed: one-point chart state, actual time spacing, changed LP values, unchanged LP explanation, rendered 50/50 head-to-head rate.');
+const at=Date.now()-3600000;const make=(offset,lp)=>({at:new Date(at+offset*60000).toISOString(),source:'Riot API',players:[{tier:'GRANDMASTER',rank:'I',lp,wins:40,losses:20},{tier:'GRANDMASTER',rank:'I',lp:1663,wins:30,losses:20}]});
+vm.runInContext('data='+JSON.stringify({solo:[make(0,1301)]})+';draw()',context);assert.ok(element('chart').innerHTML.includes('1,301 LP'));assert.ok(element('chart').innerHTML.includes('1,663 LP'));assert.ok(!element('chart').innerHTML.includes('<path'));assert.ok(element('chart-note').textContent.includes('First reading'));
+vm.runInContext('data='+JSON.stringify({solo:[make(0,1301),make(1,1325),make(10,1290)]})+';draw()',context);const chart=element('chart').innerHTML;assert.ok(chart.includes('cx="138"'));assert.ok(chart.includes('cx="795"'));assert.ok(chart.includes('1,325 LP'));assert.equal((chart.match(/data-player=/g)||[]).length,2);assert.ok(chart.includes('1,663 LP'));assert.ok(!chart.includes('4,463'));assert.ok(!chart.includes('+0'));
+vm.runInContext('data='+JSON.stringify({solo:[make(0,1301),make(10,1301)]})+';draw()',context);const flat=element('chart').innerHTML;const paths=[...flat.matchAll(/<path[^>]+d="([^"]+)"/g)].map(m=>m[1]);assert.equal(paths.length,2);assert.notEqual(paths[0],paths[1],'Two unchanged LP totals must remain on separate lines.');
+vm.runInContext('matchupData='+JSON.stringify(h)+';renderMatchups()',context);assert.ok(element('h2h').innerHTML.includes('50.0%'));assert.ok(element('h2h').innerHTML.includes('2 direct matchups'));assert.ok(element('h2h').innerHTML.includes('Opposing teams only'));assert.ok(element('h2h').innerHTML.includes('<details'));assert.ok(element('scanOlder').hidden);
+console.log('Passed: Solo/Duo-only interface, new name, removed clutter, actual LP totals, two distinct player lines, time spacing, and head-to-head rendering.');
