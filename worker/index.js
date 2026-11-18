@@ -160,26 +160,35 @@ function draw(){
  const vals=ss.flatMap(s=>[value(s,0),value(s,1)]).filter(v=>v!==null);
  if(!vals.length){$('chart').innerHTML='<div class="chart-empty">No ranked LP to show yet.</div>';return;}
  const range=[...vals,...ranks.map(r=>r.lp)],min=Math.min(...range),max=Math.max(...range),padding=Math.max(25,Math.ceil((max-min)*.15/25)*25),low=Math.max(0,Math.floor((min-padding)/50)*50),high=Math.ceil((max+padding)/50)*50;
- const start=Date.parse(ss[0].at),end=Date.parse(ss.at(-1).at),x=s=>65+(end===start?0.5:(Date.parse(s.at)-start)/(end-start))*730,y=v=>225-(v-low)/(high-low)*190;
+ const R=ranks.length?725:795,W=R-65,start=Date.parse(ss[0].at),end=Date.parse(ss.at(-1).at),y=v=>225-(v-low)/(high-low)*190;
+ // Square-root gap spacing: long gaps between daily readings shrink and dense live readings get room, while order stays chronological. Date ticks show the scale.
+ const T=[...new Set(ss.map(s=>Date.parse(s.at)))],C=T.reduce((c,t,k)=>(c.push(k?c[k-1]+Math.sqrt(t-T[k-1]):0),c),[]),total=C.at(-1);
+ const xt=t=>{if(!total)return 65+W/2;let k=0;while(k<T.length-2&&t>T[k+1])k++;const span=T[k+1]-T[k],f=span?Math.min(1,Math.max(0,(t-T[k])/span)):0;return Math.round((65+(C[k]+f*(C[k+1]-C[k]))/total*W)*10)/10;},x=s=>xt(Date.parse(s.at));
  let out='<svg viewBox="0 0 '+(ranks.length?1000:900)+' 280" role="img" aria-label="Both players’ LP over time"><title>Solo/Duo LP progression for both players</title><text x="12" y="17" fill="#a3b0b7" font-size="12">LP</text>';
- for(let j=0;j<=4;j++){const v=low+(high-low)*j/4;out+='<line x1="65" x2="795" y1="'+y(v)+'" y2="'+y(v)+'" stroke="#2a363c" stroke-dasharray="3 5"/><text x="50" y="'+(y(v)+4)+'" text-anchor="end" fill="#a3b0b7" font-size="12">'+Math.round(v)+'</text>';}
+ for(let j=0;j<=4;j++){const v=low+(high-low)*j/4;out+='<line x1="65" x2="'+R+'" y1="'+y(v)+'" y2="'+y(v)+'" stroke="#2a363c" stroke-dasharray="3 5"/><text x="50" y="'+(y(v)+4)+'" text-anchor="end" fill="#a3b0b7" font-size="12">'+Math.round(v)+'</text>';}
  if(ranks.length){
   const challenger=ranks.find(r=>r.key==='challenger'),gm=ranks.find(r=>r.key==='grandmaster');
-  if(challenger)out+='<rect x="65" y="35" width="730" height="'+Math.max(0,y(challenger.lp)-35)+'" fill="#ddbb72" opacity=".045"/>';
-  if(gm&&challenger)out+='<rect x="65" y="'+y(challenger.lp)+'" width="730" height="'+Math.max(0,y(gm.lp)-y(challenger.lp))+'" fill="#df877f" opacity=".035"/>';
+  if(challenger)out+='<rect x="65" y="35" width="'+W+'" height="'+Math.max(0,y(challenger.lp)-35)+'" fill="#ddbb72" opacity=".045"/>';
+  if(gm&&challenger)out+='<rect x="65" y="'+y(challenger.lp)+'" width="'+W+'" height="'+Math.max(0,y(gm.lp)-y(challenger.lp))+'" fill="#df877f" opacity=".035"/>';
   ranks.forEach((rank,index)=>{
    const lineY=y(rank.lp),other=ranks[1-index],badgeY=other&&Math.abs(lineY-y(other.lp))<42?lineY+(index?22:-22):lineY;
-   out+='<g class="rank-marker" data-cutoff="'+rank.key+'"><title>Current EUNE '+rank.name+' target: '+fmt(rank.lp)+' LP</title><line x1="65" x2="795" y1="'+lineY+'" y2="'+lineY+'" stroke="'+rank.color+'" stroke-width="1.5" stroke-dasharray="7 6" opacity=".8"/>'+(badgeY!==lineY?'<path d="M795 '+lineY+' L806 '+badgeY+'" fill="none" stroke="'+rank.color+'" opacity=".5"/>':'')+'<image data-rank-icon="'+rank.key+'" href="'+rank.icon+'" x="807" y="'+(badgeY-23)+'" width="46" height="46"/><text x="861" y="'+(badgeY-3)+'" fill="'+rank.color+'" font-size="12" font-weight="600">'+rank.name+'</text><text x="861" y="'+(badgeY+13)+'" fill="#a3b0b7" font-size="11">'+fmt(rank.lp)+' LP</text></g>';
+   out+='<g class="rank-marker" data-cutoff="'+rank.key+'"><title>Current EUNE '+rank.name+' target: '+fmt(rank.lp)+' LP</title><line x1="65" x2="'+R+'" y1="'+lineY+'" y2="'+lineY+'" stroke="'+rank.color+'" stroke-width="1.5" stroke-dasharray="7 6" opacity=".8"/>'+(badgeY!==lineY?'<path d="M'+R+' '+lineY+' L806 '+badgeY+'" fill="none" stroke="'+rank.color+'" opacity=".5"/>':'')+'<image data-rank-icon="'+rank.key+'" href="'+rank.icon+'" x="807" y="'+(badgeY-23)+'" width="46" height="46"/><text x="861" y="'+(badgeY-3)+'" fill="'+rank.color+'" font-size="12" font-weight="600">'+rank.name+'</text><text x="861" y="'+(badgeY+13)+'" fill="#a3b0b7" font-size="11">'+fmt(rank.lp)+' LP</text></g>';
   });
  }
+ const ends=[];
  for(let i=0;i<2;i++){
   const pts=ss.filter(s=>value(s,i)!==null).map(s=>[x(s),y(value(s,i)),s]);const color=i?'#bcafff':'#b9ec69';
   if(pts.length>1)out+='<path data-player="'+i+'" d="'+pts.map((p,j)=>p?(j&&pts[j-1]?'L':'M')+p[0]+' '+p[1]:'').join(' ')+'" stroke="'+color+'" stroke-width="3" fill="none"/>';
   pts.forEach(p=>{if(p)out+='<circle cx="'+p[0]+'" cy="'+p[1]+'" r="4" fill="'+color+'" stroke="#10171b" stroke-width="1"><title>'+PLAYERS[i].name+': '+fmt(p[2].players[i].lp)+' LP · '+(p[2].dateOnly?p[2].dateOnly+' · OP.GG':new Date(p[2].at).toLocaleString())+'</title></circle>';});
-  const last=pts.filter(Boolean).at(-1);if(last)out+='<text x="'+(ranks.length?last[0]-10:ss.length===1?last[0]+12:808)+'" text-anchor="'+(ranks.length?'end':'start')+'" y="'+(last[1]+(i&&value(ss.at(-1),0)!==null&&Math.abs(y(value(ss.at(-1),0))-last[1])<18?18:ranks.length?-10:4))+'" fill="'+color+'" font-size="13" font-weight="600">'+fmt(last[2].players[i].lp)+' LP</text>';
+  const last=pts.at(-1);if(last)ends.push({x:last[0]+9,y:last[1]+4,color,text:fmt(last[2].players[i].lp)+' LP'});
  }
+ // End labels sit just right of each line's last point; nudge apart when they would overlap.
+ if(ends.length===2&&Math.abs(ends[0].y-ends[1].y)<16&&Math.abs(ends[0].x-ends[1].x)<70){const[a,b]=ends[0].y<=ends[1].y?ends:[ends[1],ends[0]],mid=(a.y+b.y)/2;a.y=mid-8;b.y=mid+8;}
+ ends.forEach(e=>{out+='<text x="'+e.x+'" y="'+e.y+'" fill="'+e.color+'" font-size="13" font-weight="600" paint-order="stroke" stroke="#10171b" stroke-width="4">'+e.text+'</text>';});
  const label=s=>new Date(s.at).toLocaleString(undefined,{month:'short',day:'numeric',...(end-start<86400000?{hour:'2-digit',minute:'2-digit'}:{})});
- out+='<text x="65" y="255" fill="#a3b0b7" font-size="12">'+label(ss[0])+'</text>'+(ss.length>1?'<text x="795" y="255" text-anchor="end" fill="#a3b0b7" font-size="12">'+label(ss.at(-1))+'</text>':'')+'</svg>';$('chart').innerHTML=out;
+ out+='<text x="65" y="255" fill="#a3b0b7" font-size="12">'+label(ss[0])+'</text>'+(ss.length>1?'<text x="'+R+'" y="255" text-anchor="end" fill="#a3b0b7" font-size="12">'+label(ss.at(-1))+'</text>':'');
+ if(end-start>=36*3600000){let prev=65;const d=new Date(start);d.setHours(24,0,0,0);for(;d.getTime()<end;d.setDate(d.getDate()+1)){const tx=xt(d.getTime());if(tx-prev<55||R-tx<55)continue;prev=tx;out+='<line x1="'+tx+'" x2="'+tx+'" y1="226" y2="231" stroke="#3a474e"/><text x="'+tx+'" y="255" text-anchor="middle" fill="#7f8c93" font-size="11">'+d.toLocaleDateString(undefined,{month:'short',day:'numeric'})+'</text>';}}
+ out+='</svg>';$('chart').innerHTML=out;
  if(ss.length===1)$('chart-note').innerHTML='First reading — the lines will build as LP changes.';
 }
 function summarizeChampion(rows,i){
