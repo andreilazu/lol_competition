@@ -150,7 +150,10 @@ async function loadChallenger(){
 function render(){const ps=latest()?.players||INITIAL.players;$('cards').innerHTML=ps.map((p,i)=>'<article class="panel player" style="--c:var(--'+(i?'b':'a')+')"><h2 class="name">'+PLAYERS[i].name+'<span class="tag">#'+PLAYERS[i].tag+'</span></h2><div class="rank-row"><div class="lp">'+(p&&p.tier!=='UNRANKED'?fmt(p.lp):'—')+'<small>LP</small></div><span class="tier">'+(p?esc(p.tier.toLowerCase())+(['MASTER','GRANDMASTER','CHALLENGER','UNRANKED'].includes(p.tier)?'':' '+esc(p.rank)):'Unranked')+'</span></div>'+renderClimb(p)+'<div class="stats"><div><span class="label">Season win rate</span><strong class="stat">'+(p&&wr(p)!==null?wr(p).toFixed(1)+'%':'—')+'</strong></div><div><span class="label">Wins / Losses</span><strong class="stat">'+(p?p.wins+' <small>/</small> '+p.losses:'—')+'</strong></div><div><span class="label">Games</span><strong class="stat">'+(p?fmt(p.wins+p.losses):'—')+'</strong></div></div></article>').join('');draw();renderMatchups();}
 function draw(){
  const archived=ARCHIVE.flatMap(a=>a.observations.map(([date,lp])=>({at:date+'T00:00:00Z',dateOnly:date,source:'OP.GG',players:[0,1].map(i=>i===a.player?{lp,tier:'RECORDED'}:null)})));
- const all=[...archived,...data.solo.filter(s=>s.source==='Riot API')].sort((a,b)=>Date.parse(a.at)-Date.parse(b.at));
+ // Refreshes record a snapshot even when no LP changed; keep only the first and last reading of each unchanged run so idle stretches don't take up width.
+ const lpKey=s=>s.players.map(p=>p&&p.tier!=='UNRANKED'?p.lp:'').join('/');
+ const riot=data.solo.filter(s=>s.source==='Riot API').filter((s,k,a)=>k===0||k===a.length-1||lpKey(s)!==lpKey(a[k-1])||lpKey(s)!==lpKey(a[k+1]));
+ const all=[...archived,...riot].sort((a,b)=>Date.parse(a.at)-Date.parse(b.at));
  const ss=all.filter(s=>!days||Date.now()-Date.parse(s.at)<=days*86400000);
  $('chart-note').innerHTML=ss.some(s=>s.source==='OP.GG')?'Earlier readings: <a href="https://op.gg/lol/summoners/eune/Respectful%20Jew-miy23" target="_blank" rel="noopener">OP.GG</a>.':'';
  if(!ss.length){$('chart').innerHTML='<div class="chart-empty">No LP recorded for this period.</div>';return;}
@@ -187,7 +190,7 @@ function draw(){
  ends.forEach(e=>{out+='<text x="'+e.x+'" y="'+e.y+'" fill="'+e.color+'" font-size="13" font-weight="600" paint-order="stroke" stroke="#10171b" stroke-width="4">'+e.text+'</text>';});
  const label=s=>new Date(s.at).toLocaleString(undefined,{month:'short',day:'numeric',...(end-start<86400000?{hour:'2-digit',minute:'2-digit'}:{})});
  out+='<text x="65" y="255" fill="#a3b0b7" font-size="12">'+label(ss[0])+'</text>'+(ss.length>1?'<text x="'+R+'" y="255" text-anchor="end" fill="#a3b0b7" font-size="12">'+label(ss.at(-1))+'</text>':'');
- if(end-start>=36*3600000){let prev=65;const d=new Date(start);d.setHours(24,0,0,0);for(;d.getTime()<end;d.setDate(d.getDate()+1)){const tx=xt(d.getTime());if(tx-prev<55||R-tx<55)continue;prev=tx;out+='<line x1="'+tx+'" x2="'+tx+'" y1="226" y2="231" stroke="#3a474e"/><text x="'+tx+'" y="255" text-anchor="middle" fill="#7f8c93" font-size="11">'+d.toLocaleDateString(undefined,{month:'short',day:'numeric'})+'</text>';}}
+ if(end-start>=36*3600000){let prev=65;const d=new Date(start);d.setHours(24,0,0,0);for(;d.getTime()<end;d.setDate(d.getDate()+1)){const tx=xt(d.getTime()),dl=d.toLocaleDateString(undefined,{month:'short',day:'numeric'});if(tx-prev<55||R-tx<55||dl===label(ss.at(-1)))continue;prev=tx;out+='<line x1="'+tx+'" x2="'+tx+'" y1="226" y2="231" stroke="#3a474e"/><text x="'+tx+'" y="255" text-anchor="middle" fill="#7f8c93" font-size="11">'+dl+'</text>';}}
  out+='</svg>';$('chart').innerHTML=out;
  if(ss.length===1)$('chart-note').innerHTML='First reading — the lines will build as LP changes.';
 }
