@@ -16,3 +16,8 @@ if(!livePage.ok)throw new Error('Could not build the live page.');
 await mkdir('public/live',{recursive:true});
 await writeFile('public/live/index.html',await livePage.text());
 console.log('Live page built in public/live/.');
+const newsPage=await worker.fetch(new Request('https://build.example/news/'),{});
+if(!newsPage.ok)throw new Error('Could not build the news page.');
+await mkdir('public/news',{recursive:true});
+await writeFile('public/news/index.html',await newsPage.text());
+console.log('News page built in public/news/.');

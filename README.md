@@ -48,3 +48,13 @@ KDA is total kills plus assists divided by total deaths; zero deaths displays Pe
 ## Live games
 
 The `/live/` page shows the games both players are in right now, using Riot SPECTATOR-V5 through `/api/live`. If they are in the same game it shows one card (playing together or against each other); separate games get one card each; if only one is playing, only that game is shown. Each card lists both teams with champions, summoner spells, Riot IDs, Solo/Duo rank, bans, queue and a running game timer. Results are cached for 20 seconds so all viewers share one lookup, participant ranks are fetched once per game, and the page checks again every 30 seconds while open. Player PUUIDs are never sent to the browser.
+
+## News
+
+The `/news/` page is written automatically from the Solo/Duo games both players share, in the style of an esports news site: a top story with champion splash art, headlines grouped by day, and a sidebar with the head-to-head series, recent results and familiar faces. `/api/news` builds it on request from stored match records; nothing is written by hand.
+
+Each shared game is scored for story angles: head-to-head streaks and streaks being snapped, all-time lead changes, the first meeting, 10th/25th/50th meetings, repeat champion matchups, pentas and quadras, 10+ kill sprees, 15+ kill games, 9+ death games, winning with zero kills, losing with the far better KDA, fast surrenders, 38+ minute games, rematches after 30+ days, same-day rematches, revenge within three hours, duo streaks, and current top-25 EUNE players in the lobby. A game becomes an article only when its best angle clears a fixed bar; otherwise it stays in Results. The next best angles become supporting facts. Streaks make headlines only at milestone lengths, the same headline type is penalised when it would run twice in a row, and headline wording rotates, so the feed does not repeat itself.
+
+Familiar-face features cover other players who keep turning up in their shared games (three or more), when the record is lopsided over at least three games — for example, the side with that player always losing their head-to-heads. A person is not written up again unless the story gets meaningfully stronger. Ladder positions come from the current top 50 cached by `/api/challenger`, so they are labelled "currently".
+
+Match records now keep highlight stats and the other eight players of each shared game (record version 2). Existing records are re-read in the same bounded batches as other backfills. Other players' PUUIDs stay server-side; `/api/matchups` and `/api/news` never return them. Only games the two share are read, so familiar faces are limited to those games rather than each player's full history.

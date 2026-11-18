@@ -3,7 +3,7 @@ import vm from 'node:vm';
 import worker from '../worker/index.js';
 
 const year=new Date().getUTCFullYear();
-const legacy={verificationVersion:1,season:year,ids:[['BASE'],['BASE']],offset:[1,1],exhausted:[true,true],processed:['BASE'],pending:[],records:[{id:'BASE',queue:'solo',kind:'opponents',winner:0,at:year+'-03-01T00:00:00Z',duration:1200,champions:['Ahri','Rengar'],kda:['4/2/8','2/4/3'],statsVersion:1}],checkedAt:new Date().toISOString()};
+const legacy={verificationVersion:1,season:year,ids:[['BASE'],['BASE']],offset:[1,1],exhausted:[true,true],processed:['BASE'],pending:[],records:[{id:'BASE',queue:'solo',kind:'opponents',winner:0,at:year+'-03-01T00:00:00Z',duration:1200,champions:['Ahri','Rengar'],kda:['4/2/8','2/4/3'],statsVersion:2}],checkedAt:new Date().toISOString()};
 const data=new Map([['matchups-'+year+'.json',JSON.stringify(legacy)],['accounts.json',JSON.stringify([{puuid:'p0'},{puuid:'p1'}])]]);
 const BUCKET={async get(key){return data.has(key)?{json:async()=>JSON.parse(data.get(key))}:null;},async put(key,value){data.set(key,value);}};
 const env={BUCKET,RIOT_API_KEY:'test'};
