@@ -3,7 +3,18 @@ const initial={at:'2026-11-17T13:55:00Z',source:'Public snapshot · League of Gr
 let inFlight, matchupFlight, challengerFlight;
 const json=(body,status=200)=>new Response(JSON.stringify(body),{status,headers:{'Content-Type':'application/json','Cache-Control':'no-store'}});
 async function riot(url,key){const r=await fetch(url,{headers:{'X-Riot-Token':key},signal:AbortSignal.timeout(15000)});if(!r.ok){const e=new Error(({401:'Riot rejected this API key.',403:'The server’s Riot API key is invalid or expired. The site owner needs to replace it.',404:'Account or ranked data not found on EUNE.',429:'Riot rate limit reached. Please wait and retry.'})[r.status]||'Riot is temporarily unavailable. Please retry.');e.riotStatus=r.status;e.status=r.status===429?429:502;e.retryAfter=Math.max(5,Number(r.headers.get('Retry-After'))||120);throw e;}return r.json();}
-async function accounts(env,key,force=false){const old=await env.BUCKET?.get('accounts.json');if(old&&!force)return old.json();const ids=await Promise.all(players.map(p=>riot('https://europe.api.riotgames.com/riot/account/v1/accounts/by-riot-id/'+encodeURIComponent(p.name)+'/'+p.tag,key)));await env.BUCKET?.put('accounts.json',JSON.stringify(ids));return ids;}
+// Riot encrypts player IDs per API key, so cached IDs are only valid for the key that fetched them.
+// A short hash of the key (never the key) records which key that was; a rotated key refetches them.
+async function keyTag(key){const h=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(key));return [...new Uint8Array(h).slice(0,6)].map(b=>b.toString(16).padStart(2,'0')).join('');}
+async function accounts(env,key,force=false){
+ const tag=await keyTag(key),old=await env.BUCKET?.get('accounts.json');
+ if(old&&!force){const mark=await env.BUCKET.get('accounts-key.json'),saved=mark?(await mark.json()).tag:null;
+  // Caches from before this check adopt the current key; a mismatch inside a match triggers a refetch anyway.
+  if(!saved)await env.BUCKET.put('accounts-key.json',JSON.stringify({tag}));
+  if(!saved||saved===tag)return old.json();}
+ const ids=await Promise.all(players.map(p=>riot('https://europe.api.riotgames.com/riot/account/v1/accounts/by-riot-id/'+encodeURIComponent(p.name)+'/'+p.tag,key)));
+ await env.BUCKET?.put('accounts.json',JSON.stringify(ids));await env.BUCKET?.put('accounts-key.json',JSON.stringify({tag}));return ids;
+}
 async function challenger(request,env){
  if(request.method!=='GET')return json({error:'Use GET.'},405);
  const cached=await env?.BUCKET?.get('challenger-cutoff.json');const saved=cached?await cached.json():null;
@@ -39,12 +50,13 @@ async function matchups(request,env){
   }
   if(request.method==='GET')return json(publicMatchups(state));
   // Backfill stored match summaries in bounded batches without losing results.
-  state.pending=[...new Set([...state.pending,...state.records.filter(r=>(['opponents','teammates'].includes(r.kind)&&r.statsVersion!==RECORD_VERSION)||(r.kind==='teammates'&&typeof r.teamWon!=='boolean')).map(r=>r.id)])];
+  state.pending=[...new Set([...state.pending,...state.records.filter(r=>(['opponents','teammates'].includes(r.kind)&&r.statsVersion!==RECORD_VERSION&&!r.detailsUnavailable)||(r.kind==='teammates'&&typeof r.teamWon!=='boolean')).map(r=>r.id)])];
   if(state.retryAt&&Date.now()<Date.parse(state.retryAt))return json(publicMatchups(state));
   if(!env.RIOT_API_KEY)return json({error:'The server needs a Riot API key.'},503);
   const params=new URL(request.url).searchParams;
   const verify=params.get('refresh')==='1'||state.verificationVersion!==1;
-  const key=env.RIOT_API_KEY, aa=await accounts(env,key,verify);const older=params.get('older')==='1';
+  const key=env.RIOT_API_KEY;let aa=await accounts(env,key,verify),fresh=verify;const older=params.get('older')==='1';
+  const refreshIds=async()=>{aa=await accounts(env,key,true);fresh=true;state.accountsCheckedAt=new Date().toISOString();};
   if(verify){
    state.ids=[[],[]];state.offset=[0,0];state.exhausted=[false,false];state.processed=[];
    state.pending=state.records.map(r=>r.id);state.checkedAt=null;state.scanEndTime=Math.floor(Date.now()/1000);
@@ -54,7 +66,9 @@ async function matchups(request,env){
    for(let i=0;i<2;i++){
     if(older&&state.exhausted[i])continue;
     const start=older?state.offset[i]:0;
-    const ids=await riot('https://europe.api.riotgames.com/lol/match/v5/matches/by-puuid/'+encodeURIComponent(aa[i].puuid)+'/ids?type=ranked'+(older?'&endTime='+state.scanEndTime:'')+'&start='+start+'&count=100',key);
+    const idsUrl=()=>'https://europe.api.riotgames.com/lol/match/v5/matches/by-puuid/'+encodeURIComponent(aa[i].puuid)+'/ids?type=ranked'+(older?'&endTime='+state.scanEndTime:'')+'&start='+start+'&count=100';
+    // Riot answers 400 when a player ID was encrypted for a different key.
+    let ids;try{ids=await riot(idsUrl(),key);}catch(e){if(e.riotStatus!==400||fresh)throw e;await refreshIds();ids=await riot(idsUrl(),key);}
     state.ids[i]=[...new Set([...state.ids[i],...ids])];if(older)state.offset[i]=start+ids.length;if(older||!state.checkedAt)state.exhausted[i]=ids.length<100;
     // Save each cursor so a rate limit on the other account cannot discard progress.
     await env.BUCKET.put('matchups-all.json',JSON.stringify(state));
@@ -71,7 +85,9 @@ async function matchups(request,env){
     state.unavailable=[...new Set([...(state.unavailable||[]),id])];if(!state.processed.includes(id))state.processed.push(id);state.pending.shift();continue;
    }
    const info=match.info;
-   const pp=aa.map(a=>info.participants.find(p=>p.puuid===a.puuid));
+   let pp=aa.map(a=>info.participants.find(p=>p.puuid===a.puuid));
+   // Neither player found means the cached IDs are stale, not that the game is wrong.
+   if(!pp.some(Boolean)&&!fresh){await refreshIds();pp=aa.map(a=>info.participants.find(p=>p.puuid===a.puuid));}
    if(pp.every(Boolean)&&[420,440].includes(info.queueId)){
     const duration=info.gameEndTimestamp?Math.round((info.gameEndTimestamp-info.gameStartTimestamp)/1000):info.gameDuration;
     const remake=duration<300||pp.some(p=>p.gameEndedInEarlySurrender);
@@ -79,7 +95,9 @@ async function matchups(request,env){
     const number=v=>Number.isFinite(v)&&v>=0?v:null;
     const record={id,queue:info.queueId===420?'solo':'flex',at:new Date(info.gameStartTimestamp).toISOString(),duration,kind,teamWon:kind==='teammates'?Boolean(pp[0].win):null,winner:pp[0].win===pp[1].win?null:pp[0].win?0:1,champions:pp.map(p=>p.championName),kda:pp.map(p=>[p.kills,p.deaths,p.assists].join('/')),statsVersion:RECORD_VERSION,surrender:Boolean(pp[0].gameEndedInSurrender),verifiedAt:new Date().toISOString(),gameVersion:info.gameVersion||null,stats:pp.map(p=>({championId:number(p.championId),kills:number(p.kills),deaths:number(p.deaths),assists:number(p.assists),cs:number(p.totalMinionsKilled)!==null&&number(p.neutralMinionsKilled)!==null?p.totalMinionsKilled+p.neutralMinionsKilled:null,xp:number(p.champExperience),spree:number(p.largestKillingSpree),multi:number(p.largestMultiKill),quadra:number(p.quadraKills),penta:number(p.pentaKills),soloKills:number(p.challenges?.soloKills),vision:number(p.visionScore),position:p.teamPosition||null})),lobby:info.participants.filter(p=>!pp.includes(p)).map(p=>({puuid:p.puuid,name:p.riotIdGameName?p.riotIdGameName+'#'+p.riotIdTagline:null,champion:p.championName||null,championId:number(p.championId),with:pp.map(t=>t.teamId===p.teamId),win:Boolean(p.win)}))};
     const existing=state.records.findIndex(r=>r.id===id);if(existing<0)state.records.push(record);else state.records[existing]=record;
-   }else{state.records=state.records.filter(r=>r.id!==id);}
+   }else if(!pp.some(Boolean)){const kept=state.records.find(r=>r.id===id);if(kept)kept.detailsUnavailable=true;}
+   // Only one player in the game: a genuinely wrong record, safe to drop.
+   else{state.records=state.records.filter(r=>r.id!==id);}
    if(!state.processed.includes(id))state.processed.push(id);state.pending.shift();
   }
   await env.BUCKET.put('matchups-all.json',JSON.stringify(state));return json(publicMatchups(state));
@@ -290,7 +308,7 @@ async function news(request,env){
  const stored=await env.BUCKET.get('matchups-all.json')||await env.BUCKET.get('matchups-'+season+'.json');
  const state=stored?await stored.json():{records:[]};
  const apex=await env.BUCKET.get('apex-top.json'),ladder=apex?await apex.json():null;
- const pending=state.records.filter(r=>['opponents','teammates'].includes(r.kind)&&r.statsVersion!==RECORD_VERSION).length;
+ const pending=state.records.filter(r=>['opponents','teammates'].includes(r.kind)&&r.statsVersion!==RECORD_VERSION&&!r.detailsUnavailable).length;
  return json({...buildNews(state.records,players,ladder?.top||[]),pending,ladderAt:ladder?.at||null,generatedAt:new Date().toISOString()});
 }
 export default {async fetch(request,env){const u=new URL(request.url);if(u.pathname==='/api/challenger')return challenger(request,env);if(u.pathname==='/api/matchups')return matchups(request,env);if(u.pathname==='/api/live')return live(request,env);if(u.pathname==='/api/news')return news(request,env);if(u.pathname==='/api/history'){const items=env?.BUCKET?await env.BUCKET.list({prefix:'snapshots/',limit:1000}):{objects:[]};const rows=await Promise.all(items.objects.map(async o=>(await env.BUCKET.get(o.key)).json()));return json({snapshots:rows});}if(u.pathname==='/api/stats'){
