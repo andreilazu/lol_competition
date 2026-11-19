@@ -21,3 +21,8 @@ if(!newsPage.ok)throw new Error('Could not build the news page.');
 await mkdir('public/news',{recursive:true});
 await writeFile('public/news/index.html',await newsPage.text());
 console.log('News page built in public/news/.');
+const forumPage=await worker.fetch(new Request('https://build.example/forum/'),{});
+if(!forumPage.ok)throw new Error('Could not build the forum page.');
+await mkdir('public/forum',{recursive:true});
+await writeFile('public/forum/index.html',await forumPage.text());
+console.log('Forum page built in public/forum/.');

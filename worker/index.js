@@ -301,6 +301,75 @@ export function buildNews(records,list=players,top=[]){
   gamesRead:games.length
  };
 }
+// ---------- LP race: stories from the stored Solo/Duo snapshots ----------
+// Every rule here exists to keep a close race from flooding the feed: a lead only changes hands with a clear margin,
+// lead stories and gap records have a cooldown, a lead retaken soon after it was lost is not news, milestones fire once ever,
+// and only the latest few LP stories are kept.
+const LADDER_RULES={leadMargin:25,cooldown:24*36e5,retake:48*36e5,gapStep:50,gapMin:150,promoteCooldown:7*864e5,milestones:[1000,1250,1500,1750,2000,2250,2500,2750,3000],keep:5};
+const TIER_ORDER=['IRON','BRONZE','SILVER','GOLD','PLATINUM','EMERALD','DIAMOND'],APEX=['MASTER','GRANDMASTER','CHALLENGER'],DIVISIONS=['IV','III','II','I'];
+const isApex=e=>APEX.includes(e?.tier);
+// One number per rank so players in different tiers can be compared; Master and above share one LP scale.
+const ladderValue=e=>{if(!e||!Number.isFinite(e.lp))return null;if(isApex(e))return 2800+e.lp;const t=TIER_ORDER.indexOf(e.tier),d=DIVISIONS.indexOf(e.rank);return t<0||d<0?null:t*400+d*100+e.lp;};
+const titleCase=s=>s.charAt(0)+s.slice(1).toLowerCase();
+const lpText=e=>isApex(e)?e.lp.toLocaleString('en-US')+' LP':titleCase(e.tier)+' '+e.rank+' '+e.lp+' LP';
+const spell=ms=>{const h=Math.round(ms/36e5);return h>=48?Math.round(h/24)+' days':h>=1?h+(h===1?' hour':' hours'):'less than an hour';};
+const LADDER_STORIES={
+ overtake:{h:['{W} passes {L} in the LP race','New number one: {W} overtakes {L}','{W} takes the LP lead from {L}'],lede:['{W} is now on {WL}, {G} LP ahead of {L} ({LL}). {L} had been in front for {spell}.'],fact:'{W} now leads the LP race by {G}.'},
+ challenger:{h:['{P} reaches Challenger','Challenger: {P} makes it to the top tier'],lede:['{P} has been promoted to Challenger on {PL}.{rival}'],fact:'{P} reached Challenger.'},
+ milestone:{h:['{P} breaks {T} LP','{T} LP: a new high mark for {P}'],lede:['{P} is now on {PL}, crossing {T} LP for the first time in the tracked history.{rival}'],fact:'{P} crossed {T} LP.'},
+ gap:{h:["{W}'s lead grows to {G} LP, the widest yet",'Record gap: {W} is {G} LP clear of {L}'],lede:['{W} ({WL}) is now {G} LP ahead of {L} ({LL}), the biggest gap between them in the tracked history.'],fact:'Record gap: {G} LP.'}
+};
+export function buildLadderNews(snapshots,list=players,heroes=[]){
+ const names=list.map(p=>p.name),R=LADDER_RULES,articles=[],used={};
+ const rows=snapshots.filter(s=>s&&typeof s.at==='string'&&Array.isArray(s.queues?.solo)&&s.queues.solo.length===2&&s.queues.solo.every(e=>ladderValue(e)!==null)).sort((a,b)=>a.at.localeCompare(b.at));
+ if(!rows.length)return [];
+ const first=rows[0].queues.solo.map(ladderValue);
+ let leader=first[0]===first[1]?null:first[0]>first[1]?0:1,leadSince=Date.parse(rows[0].at),lastLeadStory=-Infinity,lostAt=[-Infinity,-Infinity],leadMax=Math.abs(first[0]-first[1]);
+ let maxGap=Math.abs(first[0]-first[1]),announcedGap=maxGap,lastGapStory=-Infinity;
+ const tiers=rows[0].queues.solo.map(e=>e.tier),promotedAt=[-Infinity,-Infinity];
+ const passed=[0,1].map(i=>new Set(R.milestones.filter(m=>isApex(rows[0].queues.solo[i])&&rows[0].queues.solo[i].lp>=m)));
+ for(const s of rows.slice(1)){
+  const at=Date.parse(s.at),E=s.queues.solo,V=E.map(ladderValue),gap=Math.abs(V[0]-V[1]),ahead=V[0]===V[1]?null:V[0]>V[1]?0:1;
+  const angles=[],add=(type,score,v,subject)=>angles.push({type,score,v,subject});
+  const pair=w=>({W:names[w],L:names[1-w],WL:lpText(E[w]),LL:lpText(E[1-w]),G:Math.abs(V[0]-V[1]).toLocaleString('en-US')});
+  const rival=i=>' '+names[1-i]+' is on '+lpText(E[1-i])+'.';
+  if(ahead!==null&&ahead===leader)leadMax=Math.max(leadMax,gap);
+  // Lead change: needs a clear margin, then a story only outside the cooldown and when it isn't a quick retake.
+  if(ahead!==null&&ahead!==leader&&gap>=R.leadMargin){
+   const old=leader,held=at-leadSince;
+   if(old!==null){
+    lostAt[old]=at;
+    if(at-lastLeadStory>=R.cooldown&&at-lostAt[ahead]>=R.retake){add('overtake',92+Math.min(6,Math.floor(held/864e5)),{...pair(ahead),spell:(leadSince===Date.parse(rows[0].at)?'at least ':'')+spell(held),facts:[names[old]+' had led by as much as '+leadMax.toLocaleString('en-US')+' LP.']},ahead);lastLeadStory=at;}
+   }
+   leader=ahead;leadSince=at;leadMax=gap;
+  }
+  // Gap record: a new widest gap, clearly beyond the last one reported, at most once a day.
+  if(gap>maxGap){maxGap=gap;if(ahead!==null&&gap>=R.gapMin&&gap>=announcedGap+R.gapStep&&at-lastGapStory>=R.cooldown){add('gap',60,pair(ahead),ahead);announcedGap=gap;lastGapStory=at;}}
+  for(const i of [0,1]){
+   // Challenger: an actual promotion seen in the snapshots, not a guess from today's cutoff.
+   if(E[i].tier==='CHALLENGER'&&tiers[i]!=='CHALLENGER'&&at-promotedAt[i]>=R.promoteCooldown){add('challenger',99,{P:names[i],PL:lpText(E[i]),rival:rival(i)},i);promotedAt[i]=at;}
+   tiers[i]=E[i].tier;
+   // Milestones: each mark once per player, ever; only the highest new one per update.
+   if(isApex(E[i])){const fresh=R.milestones.filter(m=>E[i].lp>=m&&!passed[i].has(m));fresh.forEach(m=>passed[i].add(m));const m=fresh.at(-1);if(m)add('milestone',m>=2000?70:m>=1500?64:58,{P:names[i],PL:lpText(E[i]),T:m.toLocaleString('en-US'),rival:rival(i)},i);}
+  }
+  if(!angles.length)continue;
+  // One LP story per update: the strongest angle leads, the rest become facts.
+  angles.sort((a,b)=>b.score-a.score);const top=angles[0],story=LADDER_STORIES[top.type];
+  used[top.type]=(used[top.type]??textSeed('lp'+top.type))+1;const k=used[top.type];
+  const facts=[...(top.v.facts||[]),...angles.slice(1).map(a=>fillText(LADDER_STORIES[a.type].fact,a.v)).filter(f=>f)].slice(0,3);
+  if(top.type!=='overtake'&&ahead!==null)facts.push(names[ahead]+' leads the LP race by '+gap.toLocaleString('en-US')+'.');
+  const h=heroes[top.subject]||[];
+  articles.push({id:'lp:'+top.type+':'+s.at+':'+top.subject,at:s.at,tag:'ladder',type:top.type,score:top.score,headline:fillText(story.h[k%story.h.length],top.v),lede:fillText(story.lede[k%story.lede.length],top.v),facts:facts.slice(0,4),hero:h[0]||null,heroId:h[1]??null,match:null});
+ }
+ return articles.slice(-R.keep);
+}
+// Each player's latest champion from the shared games, so LP stories get art too.
+function latestChampions(records){const out=[null,null];for(const r of records.filter(r=>Array.isArray(r.champions)&&r.champions.length===2).sort((a,b)=>a.at.localeCompare(b.at)))for(const i of [0,1])if(r.champions[i])out[i]=[r.champions[i],r.stats?.[i]?.championId??null];return out;}
+async function snapshotsFrom(env){
+ if(typeof env.BUCKET.list!=='function')return [];
+ const items=await env.BUCKET.list({prefix:'snapshots/',limit:1000});
+ return (await Promise.all(items.objects.map(async o=>{try{return await(await env.BUCKET.get(o.key))?.json();}catch{return null;}}))).filter(Boolean);
+}
 async function news(request,env){
  if(request.method!=='GET')return json({error:'Use GET.'},405);
  if(!env?.BUCKET)return json({error:'Shared storage is unavailable.'},503);
@@ -309,9 +378,100 @@ async function news(request,env){
  const state=stored?await stored.json():{records:[]};
  const apex=await env.BUCKET.get('apex-top.json'),ladder=apex?await apex.json():null;
  const pending=state.records.filter(r=>['opponents','teammates'].includes(r.kind)&&r.statsVersion!==RECORD_VERSION&&!r.detailsUnavailable).length;
- return json({...buildNews(state.records,players,ladder?.top||[]),pending,ladderAt:ladder?.at||null,generatedAt:new Date().toISOString()});
+ const built=buildNews(state.records,players,ladder?.top||[]);
+ let race=[];try{race=buildLadderNews(await snapshotsFrom(env),players,latestChampions(state.records));}catch{}
+ const articles=[...built.articles,...race].sort((a,b)=>b.at.localeCompare(a.at)||b.score-a.score).slice(0,60);
+ return json({...built,articles,lpUpdates:race.length,pending,ladderAt:ladder?.at||null,generatedAt:new Date().toISOString()});
 }
-export default {async fetch(request,env){const u=new URL(request.url);if(u.pathname==='/api/challenger')return challenger(request,env);if(u.pathname==='/api/matchups')return matchups(request,env);if(u.pathname==='/api/live')return live(request,env);if(u.pathname==='/api/news')return news(request,env);if(u.pathname==='/api/history'){const items=env?.BUCKET?await env.BUCKET.list({prefix:'snapshots/',limit:1000}):{objects:[]};const rows=await Promise.all(items.objects.map(async o=>(await env.BUCKET.get(o.key)).json()));return json({snapshots:rows});}if(u.pathname==='/api/stats'){
+// ---------- Forum: open threads anyone can post in with a nickname ----------
+// No accounts and no moderation, so the server does the protecting: strict limits on length, a per-visitor rate limit
+// (keyed by a salted hash of the IP, never the IP itself), a hidden spam trap, and text that is always escaped when shown.
+const FORUM={cats:{general:'General',news:'News',games:'Games',offtopic:'Off-topic'},name:[2,24],title:[4,120],body:[1,2000],gapMs:10000,perTen:6,perDay:40,threadsPerDay:8,maxPosts:1000,listLimit:200,maxRequest:12000};
+const forumText=s=>String(s??'').replace(/\r\n?/g,'\n').replace(/[\u0000-\u0008\u000B-\u001F\u007F​-‏‪-‮⁦-⁩]/g,'').replace(/[ \t]+\n/g,'\n').replace(/\n{4,}/g,'\n\n\n').trim();
+const forumLine=s=>forumText(s).replace(/\s+/g,' ');
+const forumCheck=(v,[min,max],what)=>v.length<min?what+' is too short.':v.length>max?what+' is too long (max '+max+' characters).':null;
+// Ids sort in posting order, even for two posts in the same millisecond.
+let forumSeq=0;const forumId=()=>Date.now().toString(36)+(forumSeq++%1296).toString(36).padStart(2,"0")+Math.random().toString(36).slice(2,6);
+// A news story's thread id is derived from the story id, so every visitor lands in the same thread.
+export const newsThreadId=newsId=>'n'+textSeed(String(newsId)).toString(36)+textSeed('#'+newsId).toString(36);
+const readJson=async(env,key)=>{const o=await env.BUCKET.get(key);return o?await o.json():null;};
+const publicThread=t=>({id:t.id,title:t.title,cat:t.cat,author:t.author,createdAt:t.createdAt,lastAt:t.lastAt,lastBy:t.lastBy,posts:t.posts,newsId:t.newsId||null});
+async function forumVisitor(request,env){
+ const ip=request.headers.get('x-nf-client-connection-ip')||(request.headers.get('x-forwarded-for')||'').split(',')[0].trim()||'local';
+ const d=await crypto.subtle.digest('SHA-256',new TextEncoder().encode((env.FORUM_SALT||'rift-rivals-forum')+'|'+ip));
+ return [...new Uint8Array(d)].slice(0,12).map(b=>b.toString(16).padStart(2,'0')).join('');
+}
+async function forumRate(request,env,newThread){
+ const key='forum/rate/'+await forumVisitor(request,env),now=Date.now(),r=await readJson(env,key)||{};
+ const posts=(r.posts||[]).filter(t=>now-t<864e5),threads=(r.threads||[]).filter(t=>now-t<864e5),last=posts.at(-1);
+ if(last&&now-last<FORUM.gapMs)return {error:'Slow down: wait '+Math.ceil((FORUM.gapMs-(now-last))/1000)+' seconds before posting again.'};
+ if(posts.filter(t=>now-t<6e5).length>=FORUM.perTen)return {error:'Too many posts in the last 10 minutes. Try again a bit later.'};
+ if(posts.length>=FORUM.perDay)return {error:'Daily post limit reached. Try again tomorrow.'};
+ if(newThread&&threads.length>=FORUM.threadsPerDay)return {error:'Daily limit for new threads reached. Reply to an existing thread instead.'};
+ return {commit:()=>env.BUCKET.put(key,JSON.stringify({posts:[...posts,now],threads:newThread?[...threads,now]:threads}))};
+}
+async function forumPosts(env,id){
+ if(typeof env.BUCKET.list!=='function')return [];
+ const items=await env.BUCKET.list({prefix:'forum/posts/'+id+'/',limit:FORUM.maxPosts});
+ return (await Promise.all(items.objects.map(o=>readJson(env,o.key).catch(()=>null)))).filter(Boolean).sort((a,b)=>a.at.localeCompare(b.at)||a.id.localeCompare(b.id));
+}
+async function forumIndexUpdate(env,meta){const idx=await readJson(env,'forum/index.json')||{threads:{}};idx.threads[meta.id]=publicThread(meta);await env.BUCKET.put('forum/index.json',JSON.stringify(idx));}
+async function forumAddPost(env,meta,name,body){
+ const at=new Date().toISOString(),post={id:forumId(),name,body,at};
+ await env.BUCKET.put('forum/posts/'+meta.id+'/'+String(Date.parse(at)).padStart(14,'0')+'-'+post.id+'.json',JSON.stringify(post));
+ // The index only feeds lists and counts; if two posts race and a count is lost, opening the thread repairs it.
+ const idx=await readJson(env,'forum/index.json')||{threads:{}},known=idx.threads[meta.id];
+ await forumIndexUpdate(env,{...meta,posts:(known?.posts||0)+1,lastAt:at,lastBy:name});
+ return post;
+}
+async function forum(request,env,u){
+ if(!env?.BUCKET)return json({error:'Shared storage is unavailable.'},503);
+ const path=u.pathname.replace(/\/+$/,'');
+ if(request.method==='GET'){
+  if(path==='/api/forum'){const idx=await readJson(env,'forum/index.json')||{threads:{}};return json({threads:Object.values(idx.threads).sort((a,b)=>b.lastAt.localeCompare(a.lastAt)).slice(0,FORUM.listLimit),categories:FORUM.cats});}
+  if(path==='/api/forum/thread'){
+   const newsId=u.searchParams.get('news'),id=newsId?newsThreadId(newsId):u.searchParams.get('id');
+   if(!id||!/^[a-z0-9]{4,40}$/.test(id))return json({error:'Thread not found.'},404);
+   const meta=await readJson(env,'forum/threads/'+id+'.json');
+   if(!meta)return newsId?json({thread:null,posts:[],categories:FORUM.cats}):json({error:'Thread not found.'},404);
+   const posts=await forumPosts(env,id),last=posts.at(-1),fixed={...meta,posts:posts.length,lastAt:last?.at||meta.createdAt,lastBy:last?.name||meta.author};
+   const idx=await readJson(env,'forum/index.json')||{threads:{}},known=idx.threads[id];
+   if(!known||known.posts!==fixed.posts||known.lastAt!==fixed.lastAt)await forumIndexUpdate(env,fixed);
+   return json({thread:publicThread(fixed),posts,categories:FORUM.cats});
+  }
+  return json({error:'Not found.'},404);
+ }
+ if(request.method!=='POST')return json({error:'Use GET or POST.'},405);
+ if(request.headers.get('Origin')&&request.headers.get('Origin')!==u.origin)return json({error:'Origin rejected.'},403);
+ const raw=await request.text();if(raw.length>FORUM.maxRequest)return json({error:'Post is too long.'},413);
+ let b;try{b=JSON.parse(raw);}catch{return json({error:'Send the post as JSON.'},400);}
+ if(!b||typeof b!=='object')return json({error:'Send the post as JSON.'},400);
+ // Spam trap: a field people never see. Bots that fill it get a quiet fake success.
+ if(b.website)return json({ok:true,thread:null,post:null});
+ const name=forumLine(b.name),body=forumText(b.body);
+ const bad=forumCheck(name,FORUM.name,'Nickname')||forumCheck(body,FORUM.body,'Message');if(bad)return json({error:bad},400);
+ if(path==='/api/forum/thread'){
+  const newsId=b.newsId?forumLine(b.newsId).slice(0,200):null,title=forumLine(b.title),cat=newsId?'news':b.cat;
+  const badT=forumCheck(title,FORUM.title,'Title');if(badT)return json({error:badT},400);
+  if(!Object.hasOwn(FORUM.cats,cat))return json({error:'Pick a category.'},400);
+  const id=newsId?newsThreadId(newsId):forumId(),existing=newsId?await readJson(env,'forum/threads/'+id+'.json'):null;
+  const rate=await forumRate(request,env,!existing);if(rate.error)return json({error:rate.error},429);
+  const meta=existing||{id,title,cat,author:name,createdAt:new Date().toISOString(),newsId};
+  if(!existing)await env.BUCKET.put('forum/threads/'+id+'.json',JSON.stringify(meta));
+  const post=await forumAddPost(env,meta,name,body);await rate.commit();
+  return json({ok:true,thread:publicThread({...meta,posts:1,lastAt:post.at,lastBy:name}),post},201);
+ }
+ if(path==='/api/forum/post'){
+  const id=String(b.threadId||'');if(!/^[a-z0-9]{4,40}$/.test(id))return json({error:'Thread not found.'},404);
+  const meta=await readJson(env,'forum/threads/'+id+'.json');if(!meta)return json({error:'Thread not found.'},404);
+  const idx=await readJson(env,'forum/index.json');if((idx?.threads[id]?.posts||0)>=FORUM.maxPosts)return json({error:'This thread is full. Start a new one.'},409);
+  const rate=await forumRate(request,env,false);if(rate.error)return json({error:rate.error},429);
+  const post=await forumAddPost(env,meta,name,body);await rate.commit();
+  return json({ok:true,post},201);
+ }
+ return json({error:'Not found.'},404);
+}
+export default {async fetch(request,env){const fu=new URL(request.url);if(fu.pathname==='/api/forum'||fu.pathname.startsWith('/api/forum/'))return forum(request,env,fu);if(['/forum','/forum/'].includes(fu.pathname))return new Response(forumHtml,{headers:{'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-store'}});const u=new URL(request.url);if(u.pathname==='/api/challenger')return challenger(request,env);if(u.pathname==='/api/matchups')return matchups(request,env);if(u.pathname==='/api/live')return live(request,env);if(u.pathname==='/api/news')return news(request,env);if(u.pathname==='/api/history'){const items=env?.BUCKET?await env.BUCKET.list({prefix:'snapshots/',limit:1000}):{objects:[]};const rows=await Promise.all(items.objects.map(async o=>(await env.BUCKET.get(o.key)).json()));return json({snapshots:rows});}if(u.pathname==='/api/stats'){
  if(request.method!=='POST')return json({error:'Use POST.'},405);
  if(request.headers.get('Origin')&&request.headers.get('Origin')!==u.origin)return json({error:'Origin rejected.'},403);
  const key=env?.RIOT_API_KEY;
@@ -327,7 +487,7 @@ const html=String.raw`<!doctype html><html lang="en"><head><meta charset="utf-8"
 @import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700;800&family=DM+Sans:wght@400;500;600;700&display=swap');
 .site-nav{display:flex;align-items:center;gap:18px}.site-nav a{text-decoration:none;color:var(--muted);font-size:12px}.site-nav a[aria-current]{color:var(--a)}@media(max-width:650px){.header-inner{flex-wrap:wrap}.site-nav{gap:14px}}:root{color-scheme:dark;--bg:#0b1013;--panel:#121a1f;--line:#2a363c;--muted:#a3b0b7;--a:#b9ec69;--b:#bcafff}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:#edf1ed;font:14px 'DM Sans',sans-serif}button,a,select{font:inherit}button{cursor:pointer}button:focus-visible,a:focus-visible,summary:focus-visible{outline:2px solid var(--a);outline-offset:4px}a{color:inherit}header{border-bottom:1px solid var(--line)}.header-inner{max-width:1200px;margin:auto;padding:24px 30px;display:flex;align-items:center;justify-content:space-between;gap:20px}.brand{font:700 30px 'Barlow Condensed';letter-spacing:.5px;text-transform:uppercase}.brand span{color:var(--a)}.queue{color:var(--muted);font-size:12px;margin:4px 0 0}.btn{padding:10px 15px;border:1px solid #3a484f;border-radius:5px;background:transparent;color:#edf1ed;font-weight:600;font-size:12px}.primary{background:var(--a);color:#14200a;border-color:var(--a)}button:disabled{opacity:.6;cursor:default}[hidden]{display:none!important}main{max-width:1200px;margin:auto;padding:28px 30px 20px}h1,h2,h3,p{margin:0}h2{font:600 25px 'Barlow Condensed';letter-spacing:.3px}.section-head{display:flex;align-items:center;justify-content:space-between;gap:15px;margin-bottom:20px}.panel{border:1px solid var(--line);border-radius:8px;background:var(--panel);padding:24px}.h2h-panel{background:linear-gradient(120deg,#1b2619,#121a1f 75%);border-color:#3d4e35;margin-bottom:22px}.h2h-score{display:grid;grid-template-columns:1fr auto 1fr;gap:20px;align-items:center}.who{font-size:13px;font-weight:600;overflow-wrap:anywhere}.h2h-player strong{display:block;font:700 56px/1.1 'Barlow Condensed';color:var(--a);margin:7px 0}.h2h-player:last-child{text-align:right}.h2h-player:last-child strong{color:var(--b)}.record{font-size:11px;color:var(--muted)}.h2h-total{text-align:center}.h2h-total b{font:600 32px 'Barlow Condensed';display:block;margin-bottom:5px}.h2h-total span{font-size:11px;color:var(--muted)}.h2h-bar{display:flex;height:7px;border-radius:5px;background:#2a343a;overflow:hidden;margin-top:22px}.h2h-bar span:first-child{background:var(--a)}.h2h-bar span:last-child{background:var(--b)}.scope{color:var(--muted);font-size:11px;line-height:1.7;margin-top:12px}.cards{display:grid;grid-template-columns:1fr 1fr;gap:22px;margin-bottom:28px}.player{border-top:2px solid var(--c);background:linear-gradient(120deg,color-mix(in srgb,var(--c) 5%,#121a1f),#121a1f 80%)}.name{font:600 clamp(25px,3vw,33px) 'Barlow Condensed';overflow-wrap:anywhere}.tag{color:var(--muted);font:12px 'DM Sans';margin-left:7px}.rank-row{display:flex;align-items:baseline;gap:15px;margin:20px 0}.lp{font:600 52px/1 'Barlow Condensed';color:var(--c)}.lp small{font:12px 'DM Sans';color:var(--muted);margin-left:5px}.tier{color:var(--muted);font-size:12px;text-transform:capitalize}.climb{margin:0 0 20px}.climb strong{display:block;color:var(--c);font-size:14px;font-weight:600}.climb small{display:block;color:var(--muted);font-size:11px;margin-top:5px}.stats{border-top:1px solid var(--line);padding-top:18px;display:flex;justify-content:space-between;gap:15px}.label{color:var(--muted);font-size:11px}.stat{display:block;font-size:22px;margin-top:7px;font-weight:600}.stat small{font-size:12px;font-weight:400;color:var(--muted)}.controls{display:flex;gap:6px}.controls button{padding:7px 12px;font-size:11px}.controls .active{border-color:var(--a);color:var(--a)}.legend{display:flex;gap:22px;flex-wrap:wrap;margin-bottom:18px;font-size:12px}.dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--a);margin-right:7px}.chart{height:340px;position:relative}.cutoff-key{margin-left:auto;color:#c2a56b;font-size:10px}.rank-marker image{filter:drop-shadow(0 0 5px #0009)}.chart svg{width:100%;height:100%}.chart-empty{height:100%;display:grid;place-items:center;text-align:center;color:var(--muted);font-size:13px}.chart-note{font-size:11px;color:var(--muted);margin-top:8px;line-height:1.6}.error{color:#ffc3ad;font-size:12px;margin-bottom:20px;line-height:1.6}footer{color:#7f9099;font-size:10px;padding:24px 0 0;line-height:1.6}@media(max-width:650px){.header-inner{padding:18px 20px}.brand{font-size:27px}main{padding:20px}.panel{padding:20px}.cards{grid-template-columns:1fr;gap:15px}.h2h-score{gap:10px}.h2h-player strong{font-size:44px}.who{font-size:11px}.h2h-total b{font-size:27px}.h2h-total span{font-size:10px}.section-head{flex-wrap:wrap}.chart{height:290px}.legend{gap:12px;font-size:10px}}
 .champion-section{margin-bottom:28px}.champion-section>h2{margin-bottom:16px} .champion-grid{display:grid;grid-template-columns:1fr 1fr;gap:22px}.champion-panel{padding:0;overflow:hidden;border-top:2px solid var(--c)}.champion-heading{padding:20px;border-bottom:1px solid var(--line)}.champion-heading h3{color:var(--c);font:600 25px 'Barlow Condensed';overflow-wrap:anywhere}.champion-row{padding:16px 20px;border-bottom:1px solid var(--line)}.champion-row:last-child{border-bottom:0}.champion-row-top{display:grid;grid-template-columns:40px minmax(0,1fr) auto;align-items:center;gap:10px}.champion-icon{height:40px;width:40px;border-radius:5px;background:#28343b;overflow:hidden;display:grid;place-items:center;color:var(--c);font-weight:700}.champion-icon img{width:40px;height:40px;object-fit:cover}.champion-name{font-weight:700;font-size:13px;overflow-wrap:anywhere}.champion-kda{font-size:11px;color:var(--muted);margin-top:5px}.champion-kda b{color:var(--c)}.champion-result{text-align:right;font-size:13px;font-weight:700}.champion-result small{display:block;color:var(--muted);font-size:10px;font-weight:400;margin-top:5px}.champion-empty{padding:24px 20px;color:var(--muted);font-size:12px;line-height:1.7}@media(max-width:800px){.champion-grid{grid-template-columns:1fr}}@media(max-width:400px){.champion-row,.champion-heading{padding:15px}}
-</style></head><body><header><div class="header-inner"><div><h1 class="brand">Schizo <span>Battle</span></h1><p class="queue">Ranked Solo / Duo · EUNE</p></div><nav class="site-nav" aria-label="Main navigation"><a href="/" aria-current="page">Overview</a><a href="/news/">News</a><a href="/live/">Live</a><a href="/whos-fault/">Who's fault?</a><button class="btn primary" id="refresh">Refresh</button></nav></div></header><main><p class="error" id="error" role="status" hidden></p><section class="panel h2h-panel" aria-labelledby="h2h-title"><div class="section-head"><h2 id="h2h-title">Head-to-head</h2><button class="btn" id="scanOlder" hidden>Load older matches</button></div><div id="h2h" aria-live="polite"><p class="scope">Loading results…</p></div></section><section class="champion-section" aria-labelledby="champion-title"><h2 id="champion-title">Champions head-to-head</h2><div id="champion-stats" class="champion-grid" aria-live="polite"><p class="scope">Loading champion stats…</p></div></section><div class="cards" id="cards"></div><section aria-labelledby="chart-title"><div class="section-head"><h2 id="chart-title">LP over time</h2><div class="controls" aria-label="Time period"><button class="btn active" data-days="7">7 days</button><button class="btn" data-days="30">30 days</button><button class="btn" data-days="0">All</button></div></div><div class="panel"><div class="legend"><span><i class="dot"></i>Respectful Jew</span><span><i class="dot" style="background:var(--b)"></i>regelepetras2006</span><span class="cutoff-key" id="cutoff-key" hidden>Current cutoffs</span></div><div class="chart" id="chart"></div><p class="chart-note" id="chart-note"></p></div></section><footer>Not affiliated with Riot Games.</footer></main>
+</style></head><body><header><div class="header-inner"><div><h1 class="brand">Schizo <span>Battle</span></h1><p class="queue">Ranked Solo / Duo · EUNE</p></div><nav class="site-nav" aria-label="Main navigation"><a href="/" aria-current="page">Overview</a><a href="/news/">News</a><a href="/live/">Live</a><a href="/whos-fault/">Who's fault?</a><a href="/forum/">Forum</a><button class="btn primary" id="refresh">Refresh</button></nav></div></header><main><p class="error" id="error" role="status" hidden></p><section class="panel h2h-panel" aria-labelledby="h2h-title"><div class="section-head"><h2 id="h2h-title">Head-to-head</h2><button class="btn" id="scanOlder" hidden>Load older matches</button></div><div id="h2h" aria-live="polite"><p class="scope">Loading results…</p></div></section><section class="champion-section" aria-labelledby="champion-title"><h2 id="champion-title">Champions head-to-head</h2><div id="champion-stats" class="champion-grid" aria-live="polite"><p class="scope">Loading champion stats…</p></div></section><div class="cards" id="cards"></div><section aria-labelledby="chart-title"><div class="section-head"><h2 id="chart-title">LP over time</h2><div class="controls" aria-label="Time period"><button class="btn active" data-days="7">7 days</button><button class="btn" data-days="30">30 days</button><button class="btn" data-days="0">All</button></div></div><div class="panel"><div class="legend"><span><i class="dot"></i>Respectful Jew</span><span><i class="dot" style="background:var(--b)"></i>regelepetras2006</span><span class="cutoff-key" id="cutoff-key" hidden>Current cutoffs</span></div><div class="chart" id="chart"></div><p class="chart-note" id="chart-note"></p></div></section><footer>Not affiliated with Riot Games.</footer></main>
 <script>const PLAYERS=${JSON.stringify(players)},INITIAL=${JSON.stringify(initial)};
 const ARCHIVE=[{"player":0,"url":"https://op.gg/lol/summoners/eune/Respectful%20Jew-miy23","observations":[["2026-11-05",622],["2026-11-07",729],["2026-11-08",821],["2026-11-11",971],["2026-11-12",911],["2026-11-13",1031],["2026-11-14",1151],["2026-11-16",1151]]},{"player":1,"url":"https://op.gg/lol/summoners/eune/regelepetras2006-smrfm","observations":[["2026-11-07",1718],["2026-11-08",1742],["2026-11-09",1766],["2026-11-10",1638],["2026-11-13",1606],["2026-11-14",1553],["2026-11-16",1635]]}];
 let days=7,busy=false,matchupBusy=false,matchupData=null,olderScanning=false,matchupTimer=null,challengerData=null;let data={solo:[]};
@@ -446,7 +606,7 @@ async function refresh(force=false){if(busy)return;busy=true;loadChallenger();$(
 $('refresh').onclick=()=>{refresh(true);loadMatchups(false,true);};$('scanOlder').onclick=()=>{if(matchupBusy)return;olderScanning=true;loadMatchups(true);};document.querySelectorAll('[data-days]').forEach(b=>b.onclick=()=>{days=Number(b.dataset.days);document.querySelectorAll('[data-days]').forEach(x=>x.classList.toggle('active',x===b));draw();});setInterval(()=>{if(!document.hidden){refresh();if(!olderScanning)loadMatchups();}},300000);render();loadHistory().then(render).catch(()=>{}).finally(refresh);loadMatchups();</script></body></html>`;
 const faultHtml=String.raw`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="description" content="Duo losses and deeply unserious verdicts."><title>Who's fault is it? · Schizo Battle</title><style>${html.match(/<style>([\s\S]*?)<\/style>/)[1]}
 .fault-main{max-width:850px}.fault-intro{display:flex;justify-content:space-between;align-items:end;gap:16px;margin:10px 0 28px}.fault-title{font:600 clamp(32px,6vw,46px)/1.1 'Barlow Condensed'}.fault-intro p{color:var(--muted);font-size:12px;margin-top:8px}.joke-label{color:var(--muted);font-size:10px;white-space:nowrap;border:1px solid var(--line);padding:6px 9px;border-radius:20px}.loss-feed{display:grid;gap:16px}.loss-card{padding:0;overflow:hidden;transition:border-color .18s ease,transform .18s ease;animation:card-in .3s ease both;animation-delay:calc(min(var(--order),5)*35ms)}.loss-card:hover{border-color:#435159;transform:translateY(-1px)}.loss-meta{display:flex;align-items:center;justify-content:space-between;padding:13px 20px;border-bottom:1px solid var(--line);font-size:10px;color:var(--muted)}.defeat{color:#eda8a4;font-weight:600;display:inline-flex;align-items:center;gap:7px}.defeat:before{content:'';width:5px;height:5px;border-radius:50%;background:#d87973}.match-players{display:grid;grid-template-columns:1fr 1fr;gap:22px;padding:20px}.match-player{display:flex;align-items:center;gap:12px;min-width:0}.match-player:last-child{border-left:1px solid var(--line);padding-left:22px}.portrait{position:relative;display:grid;place-items:center;width:50px;height:50px;border:1px solid #3c4a50;border-radius:8px;overflow:hidden;background:#263139;flex-shrink:0;color:var(--c);font-weight:700}.portrait img{position:absolute;width:100%;height:100%;object-fit:cover}.match-player-info{min-width:0}.summoner{color:var(--c);font-size:10px;overflow-wrap:anywhere;margin-bottom:4px}.champion{font-size:14px;font-weight:600}.game-kda{display:flex;align-items:baseline;gap:6px;margin-top:7px;font-size:17px;font-weight:600;font-variant-numeric:tabular-nums}.game-kda .slash{font-size:11px;color:#64757d;font-weight:400}.game-kda .deaths{color:#eda8a4}.game-kda small{font-size:10px;color:var(--muted);font-weight:400;margin-left:6px}.match-verdict{padding:14px 20px;border-top:1px solid var(--line);border-left:3px solid var(--culprit);background:color-mix(in srgb,var(--culprit) 4%,var(--panel))}.match-verdict-right{text-align:right;border-left:0;border-right:3px solid var(--culprit)}.match-verdict strong{font-size:12px;color:var(--culprit);font-weight:600}.match-verdict p{color:#c1cbd0;font-size:12px;line-height:1.5;margin-top:5px}.feed-status{font-size:11px;color:var(--muted);margin-top:16px;line-height:1.6}.feed-skeleton{height:196px;background:linear-gradient(110deg,#121a1f 25%,#1a252b 45%,#121a1f 65%);background-size:200% 100%;animation:shimmer 1.5s ease infinite;border:1px solid var(--line);border-radius:8px}.empty-feed{padding:32px;text-align:center;color:var(--muted);font-size:13px}.retry{margin-top:12px}.loss-count{font-variant-numeric:tabular-nums}@keyframes card-in{from{opacity:0;transform:translateY(7px)}to{opacity:1;transform:translateY(0)}}@keyframes shimmer{to{background-position:-200% 0}}@media(prefers-reduced-motion:reduce){.loss-card,.feed-skeleton{animation:none}.loss-card{transition:none}}@media(max-width:540px){.fault-main{padding:20px 14px}.fault-intro{align-items:start;gap:10px;margin-bottom:20px}.match-players{padding:16px 14px;gap:12px}.match-player{gap:9px}.match-player:last-child{padding-left:12px}.portrait{width:40px;height:40px;border-radius:6px}.champion{font-size:12px}.game-kda{font-size:15px;gap:4px;flex-wrap:wrap}.game-kda small{font-size:9px;margin-left:3px}.loss-meta{padding:12px 14px}.match-verdict{padding:13px 14px}.summoner{font-size:9px}.joke-label{font-size:9px}}
-</style></head><body><header><div class="header-inner"><a class="brand" href="/" style="text-decoration:none">Schizo <span>Battle</span></a><nav class="site-nav" aria-label="Main navigation"><a href="/">Overview</a><a href="/news/">News</a><a href="/live/">Live</a><a href="/whos-fault/" aria-current="page">Who's fault?</a></nav></div></header><main class="fault-main"><div class="fault-intro"><div><h1 class="fault-title">Who's fault is it?</h1><p id="loss-count" class="loss-count">Their losses. Our verdict.</p></div><span class="joke-label">Just for fun</span></div><section class="loss-feed" id="loss-feed" aria-label="Shared losses" aria-busy="true"><div class="feed-skeleton" aria-hidden="true"></div><div class="feed-skeleton" aria-hidden="true"></div><div class="feed-skeleton" aria-hidden="true"></div></section><p class="feed-status" id="feed-status" role="status"></p><button class="btn retry" id="retry" hidden>Try again</button><footer>Not affiliated with Riot Games.</footer></main><script>
+</style></head><body><header><div class="header-inner"><a class="brand" href="/" style="text-decoration:none">Schizo <span>Battle</span></a><nav class="site-nav" aria-label="Main navigation"><a href="/">Overview</a><a href="/news/">News</a><a href="/live/">Live</a><a href="/whos-fault/" aria-current="page">Who's fault?</a><a href="/forum/">Forum</a></nav></div></header><main class="fault-main"><div class="fault-intro"><div><h1 class="fault-title">Who's fault is it?</h1><p id="loss-count" class="loss-count">Their losses. Our verdict.</p></div><span class="joke-label">Just for fun</span></div><section class="loss-feed" id="loss-feed" aria-label="Shared losses" aria-busy="true"><div class="feed-skeleton" aria-hidden="true"></div><div class="feed-skeleton" aria-hidden="true"></div><div class="feed-skeleton" aria-hidden="true"></div></section><p class="feed-status" id="feed-status" role="status"></p><button class="btn retry" id="retry" hidden>Try again</button><footer>Not affiliated with Riot Games.</footer></main><script>
 const PLAYERS=${JSON.stringify(players)};
 const $=id=>document.getElementById(id);
 const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -516,7 +676,7 @@ const liveHtml=String.raw`<!doctype html><html lang="en"><head><meta charset="ut
 .idle{padding:44px 24px;text-align:center}.idle h2{margin-bottom:8px}.idle p{color:var(--muted);font-size:13px}.live-status{font-size:11px;color:var(--muted);margin-top:16px;line-height:1.6}.feed-skeleton{height:420px;background:linear-gradient(110deg,#121a1f 25%,#1a252b 45%,#121a1f 65%);background-size:200% 100%;animation:shimmer 1.5s ease infinite;border:1px solid var(--line);border-radius:8px}
 @keyframes card-in{from{opacity:0;transform:translateY(7px)}to{opacity:1;transform:translateY(0)}}@keyframes shimmer{to{background-position:-200% 0}}@keyframes pulse{70%{box-shadow:0 0 0 6px #e2554c00}100%{box-shadow:0 0 0 0 #e2554c00}}@media(prefers-reduced-motion:reduce){.game-card,.feed-skeleton,.status-pill.on span:before{animation:none}}
 @media(max-width:760px){.teams{grid-template-columns:1fr}.team+.team{border-left:0;border-top:1px solid var(--line)}}@media(max-width:540px){.live-main{padding:20px 14px}.status-row{grid-template-columns:1fr}.game-head{padding:12px 14px;flex-wrap:wrap}.team{padding:12px 10px 14px}}
-</style></head><body><header><div class="header-inner"><a class="brand" href="/" style="text-decoration:none">Schizo <span>Battle</span></a><nav class="site-nav" aria-label="Main navigation"><a href="/">Overview</a><a href="/news/">News</a><a href="/live/" aria-current="page">Live</a><a href="/whos-fault/">Who's fault?</a></nav></div></header><main class="live-main"><div class="live-intro"><div><h1 class="live-title">Live games</h1><p class="live-sub" id="live-sub">Checking who's in game…</p></div><button class="btn" id="live-refresh">Check now</button></div><div class="status-row" id="status-row"></div><section class="live-feed" id="live-feed" aria-live="polite" aria-busy="true"><div class="feed-skeleton" aria-hidden="true"></div></section><p class="live-status" id="live-status" role="status"></p><footer>Not affiliated with Riot Games.</footer></main><script>
+</style></head><body><header><div class="header-inner"><a class="brand" href="/" style="text-decoration:none">Schizo <span>Battle</span></a><nav class="site-nav" aria-label="Main navigation"><a href="/">Overview</a><a href="/news/">News</a><a href="/live/" aria-current="page">Live</a><a href="/whos-fault/">Who's fault?</a><a href="/forum/">Forum</a></nav></div></header><main class="live-main"><div class="live-intro"><div><h1 class="live-title">Live games</h1><p class="live-sub" id="live-sub">Checking who's in game…</p></div><button class="btn" id="live-refresh">Check now</button></div><div class="status-row" id="status-row"></div><section class="live-feed" id="live-feed" aria-live="polite" aria-busy="true"><div class="feed-skeleton" aria-hidden="true"></div></section><p class="live-status" id="live-status" role="status"></p><footer>Not affiliated with Riot Games.</footer></main><script>
 const PLAYERS=${JSON.stringify(players)};
 const $=id=>document.getElementById(id);
 const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -612,16 +772,21 @@ const newsHtml=String.raw`<!doctype html><html lang="en"><head><meta charset="ut
 .series-score{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:8px;padding:16px 14px 6px;text-align:center}.series-score b{display:block;font:700 44px/1 'Barlow Condensed'}.series-score span{display:block;font-size:11px;margin-top:4px;overflow-wrap:anywhere}.series-score i{color:var(--muted);font-style:normal;font-size:20px}.form{display:flex;justify-content:center;gap:5px;padding:8px 14px 4px}.dot{width:9px;height:9px;border-radius:50%}.dot.a{background:var(--a)}.dot.b{background:var(--b)}.series-note{text-align:center;color:var(--muted);font-size:11px;padding:6px 14px 14px}
 .result-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:4px 10px;padding:9px 14px}.result-row+.result-row{border-top:1px solid var(--line)}.rr-p{grid-column:1;display:flex;align-items:center;gap:8px;font-size:12px;opacity:.5;min-width:0}.rr-p.won{opacity:1}.rr-p img{width:20px;height:20px;border-radius:4px}.rr-p span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.rr-p b{margin-left:auto;font-weight:600;font-variant-numeric:tabular-nums;font-size:11px}.result-row time{grid-column:2;grid-row:1/3;align-self:center;color:var(--muted);font-size:10px}
 .face-row{display:grid;grid-template-columns:28px minmax(0,1fr);gap:10px;align-items:center;padding:10px 14px}.face-row+.face-row{border-top:1px solid var(--line)}.face-row img{width:28px;height:28px;border-radius:50%}.face-row b{display:block;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.face-row small{display:block;color:var(--muted);font-size:11px;margin-top:2px}.side-empty{padding:14px;color:var(--muted);font-size:12px}
+.discuss{display:inline-flex;align-items:center;gap:6px;margin-top:12px;font-size:12px;font-weight:600;color:var(--a);text-decoration:none}.discuss:hover{text-decoration:underline}.discuss b{font-weight:700}.act-row{display:flex;align-items:center;gap:10px;padding:9px 12px 9px 11px;border-left:3px solid var(--t);text-decoration:none;font-size:13px;color:#d5dde1}.act-row+.act-row{border-top:1px solid var(--line)}.act-row:hover{background:#1a262d}.act-title{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.act-count{color:var(--muted);font-variant-numeric:tabular-nums;font-size:12px}
 .empty-news{padding:44px 24px;text-align:center}.empty-news h2{margin-bottom:8px}.empty-news p{color:var(--muted);font-size:13px}.news-status{font-size:11px;color:var(--muted);margin-top:14px;line-height:1.6}.hero-skeleton{height:340px;border-radius:8px;border:1px solid var(--line);background:linear-gradient(110deg,#121a1f 25%,#1a252b 45%,#121a1f 65%);background-size:200% 100%;animation:shimmer 1.5s ease infinite}
 @keyframes card-in{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}@keyframes shimmer{to{background-position:-200% 0}}@media(prefers-reduced-motion:reduce){.hero-card,.story-body,.hero-skeleton{animation:none}}
 @media(max-width:920px){.news-grid{grid-template-columns:1fr}}@media(max-width:540px){main.news-main{padding:20px 16px}.hero-card{min-height:300px}.hero-copy{padding:18px 16px}.story summary{grid-template-columns:30px minmax(0,1fr);gap:10px;padding:10px 12px}.story-icon{width:30px;height:30px}.story-time{grid-column:2;font-size:10px}.story-body{padding:2px 12px 14px}.match-line{gap:8px;padding:9px}.ml-player img{width:26px;height:26px}}
-</style></head><body><header><div class="header-inner"><a class="brand" href="/" style="text-decoration:none">Schizo <span>Battle</span></a><nav class="site-nav" aria-label="Main navigation"><a href="/">Overview</a><a href="/news/" aria-current="page">News</a><a href="/live/">Live</a><a href="/whos-fault/">Who's fault?</a></nav></div></header><main class="news-main"><div class="news-intro"><div><h1 class="news-title">News</h1><p class="news-sub" id="news-sub">Written automatically from every game they share.</p></div></div><div class="news-grid"><div class="news-col"><section id="hero" aria-label="Top story"><div class="hero-skeleton" aria-hidden="true"></div></section><section class="feed" id="feed" aria-label="Latest news" aria-busy="true"></section><p class="news-status" id="news-status" role="status"></p></div><aside class="news-side"><section class="side-box"><h2 class="side-title">Head-to-head</h2><div id="series"><p class="side-empty">Loading…</p></div></section><section class="side-box"><h2 class="side-title">Results</h2><div id="results"></div></section><section class="side-box" id="faces-box" hidden><h2 class="side-title">Familiar faces</h2><div id="faces"></div></section></aside></div><footer>Not affiliated with Riot Games.</footer></main><script>
+</style></head><body><header><div class="header-inner"><a class="brand" href="/" style="text-decoration:none">Schizo <span>Battle</span></a><nav class="site-nav" aria-label="Main navigation"><a href="/">Overview</a><a href="/news/" aria-current="page">News</a><a href="/live/">Live</a><a href="/whos-fault/">Who's fault?</a><a href="/forum/">Forum</a></nav></div></header><main class="news-main"><div class="news-intro"><div><h1 class="news-title">News</h1><p class="news-sub" id="news-sub">Written automatically from every game they share and every LP update.</p></div></div><div class="news-grid"><div class="news-col"><section id="hero" aria-label="Top story"><div class="hero-skeleton" aria-hidden="true"></div></section><section class="feed" id="feed" aria-label="Latest news" aria-busy="true"></section><p class="news-status" id="news-status" role="status"></p></div><aside class="news-side"><section class="side-box"><h2 class="side-title">Head-to-head</h2><div id="series"><p class="side-empty">Loading…</p></div></section><section class="side-box"><h2 class="side-title">Results</h2><div id="results"></div></section><section class="side-box"><h2 class="side-title">Recent activity</h2><div id="activity"><p class="side-empty">Loading…</p></div></section><section class="side-box" id="faces-box" hidden><h2 class="side-title">Familiar faces</h2><div id="faces"></div></section></aside></div><footer>Not affiliated with Riot Games.</footer></main><script>
 const PLAYERS=${JSON.stringify(players)};
 const $=id=>document.getElementById(id);
 const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const CDRAGON='https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/';
-const TAGS={h2h:['Head-to-head','#ddbb72'],duo:['Duo','#6fb3ff'],feature:['Feature','#ff8a80']};
-let news=null,busy=false,fills=0;
+const TAGS={h2h:['Head-to-head','#ddbb72'],duo:['Duo','#6fb3ff'],feature:['Feature','#ff8a80'],ladder:['LP race','#7fe0c2']};
+let news=null,busy=false,fills=0,forumThreads=[];
+const FORUM_COLORS={general:'#ddbb72',news:'#7fe0c2',games:'#6fb3ff',offtopic:'#ff8a80'};
+function discuss(a){const t=forumThreads.find(x=>x.newsId===a.id),n=t?t.posts:0;return '<a class="discuss" href="/forum/?news='+encodeURIComponent(a.id)+'&title='+encodeURIComponent(a.headline)+'">Discuss'+(n?' <b>('+n+')</b>':'')+'</a>';}
+function activity(){const el=$('activity');if(!el)return;el.innerHTML=forumThreads.length?forumThreads.slice(0,12).map(t=>'<a class="act-row" style="--t:'+(FORUM_COLORS[t.cat]||FORUM_COLORS.general)+'" href="/forum/?t='+encodeURIComponent(t.id)+'" title="'+esc(t.title)+'"><span class="act-title">'+esc(t.title)+'</span><span class="act-count">'+t.posts+'</span></a>').join(''):'<p class="side-empty">No forum posts yet. <a href="/forum/">Start a thread</a>.</p>';}
+async function loadForum(){try{const r=await fetch('/api/forum');if(r.ok){forumThreads=(await r.json()).threads||[];if(news)render();else activity();}}catch{}}
 const icon=id=>Number.isInteger(id)&&id>0?CDRAGON+'v1/champion-icons/'+id+'.png':'';
 const splash=name=>name?CDRAGON+'assets/characters/'+name.toLowerCase()+'/skins/base/images/'+name.toLowerCase()+'_splash_centered_0.jpg':'';
 const img=(src,alt)=>src?'<img src="'+esc(src)+'" alt="'+esc(alt||'')+'" loading="lazy" onerror="this.remove()">':'';
@@ -638,8 +803,8 @@ function matchLine(m){
  return '<div class="match-line">'+side(0)+'<span class="ml-mid">'+(m.kind==='opponents'?'vs':m.teamWon?'Win':'Loss')+'<small>'+Math.round(m.duration/60)+' min · '+esc(date)+'</small></span>'+side(1)+'</div>';
 }
 const facts=a=>a.facts.length?'<ul class="facts">'+a.facts.map(f=>'<li>'+names(f)+'</li>').join('')+'</ul>':'';
-function hero(a){return '<article class="hero-card"><div class="hero-art">'+(a.hero?'<img src="'+esc(splash(a.hero))+'" alt="" onerror="this.remove()">':'')+'</div><div class="hero-copy">'+tag(a)+'<h2 class="hero-headline">'+names(a.headline)+'</h2><p class="hero-lede">'+names(a.lede)+'</p>'+facts(a)+matchLine(a.match)+'<time class="hero-meta" datetime="'+esc(a.at)+'">'+ago(a.at)+'</time></div></article>';}
-function story(a){return '<details class="story"><summary><span class="story-icon">'+img(icon(a.heroId),a.hero)+'</span><span class="story-text">'+tag(a)+'<span class="story-headline">'+names(a.headline)+'</span></span><time class="story-time" datetime="'+esc(a.at)+'">'+ago(a.at)+'</time></summary><div class="story-body"><p class="lede">'+names(a.lede)+'</p>'+facts(a)+matchLine(a.match)+'</div></details>';}
+function hero(a){return '<article class="hero-card"><div class="hero-art">'+(a.hero?'<img src="'+esc(splash(a.hero))+'" alt="" onerror="this.remove()">':'')+'</div><div class="hero-copy">'+tag(a)+'<h2 class="hero-headline">'+names(a.headline)+'</h2><p class="hero-lede">'+names(a.lede)+'</p>'+facts(a)+matchLine(a.match)+discuss(a)+'<time class="hero-meta" datetime="'+esc(a.at)+'">'+ago(a.at)+'</time></div></article>';}
+function story(a){return '<details class="story"><summary><span class="story-icon">'+img(icon(a.heroId),a.hero)+'</span><span class="story-text">'+tag(a)+'<span class="story-headline">'+names(a.headline)+'</span></span><time class="story-time" datetime="'+esc(a.at)+'">'+ago(a.at)+'</time></summary><div class="story-body"><p class="lede">'+names(a.lede)+'</p>'+facts(a)+matchLine(a.match)+discuss(a)+'</div></details>';}
 // The top story is the strongest of the latest few, so a big moment stays up front for a while.
 function pickHero(list){return list.slice(0,6).reduce((best,a)=>a.score>best.score?a:best,list[0]);}
 function series(s){
@@ -663,7 +828,7 @@ function render(){
  }
  $('series').innerHTML=series(d.series);
  $('results').innerHTML=d.results.length?d.results.slice(0,8).map(resultRow).join(''):'<p class="side-empty">No results yet.</p>';
- $('faces-box').hidden=!d.faces.length;$('faces').innerHTML=d.faces.map(faceRow).join('');
+ activity();$('faces-box').hidden=!d.faces.length;$('faces').innerHTML=d.faces.map(faceRow).join('');
  $('news-sub').textContent=list.length+(list.length===1?' story':' stories')+' from '+d.gamesRead+' shared games';
 }
 async function load(fill=false){
@@ -682,6 +847,99 @@ async function load(fill=false){
  if(again)setTimeout(()=>load(true),2500);
  else if(!fill&&fills===0)load(true);
 }
+loadForum();
 setInterval(()=>{for(const t of document.querySelectorAll('time[datetime].story-time,time[datetime].hero-meta'))t.textContent=ago(t.getAttribute('datetime'));},60000);
+load();
+</script></body></html>`;
+const forumHtml=String.raw`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="description" content="Talk about anything: the LP race, the head-to-head, the news, or nothing at all."><title>Forum · Schizo Battle</title><style>${newsHtml.match(/<style>([\s\S]*?)<\/style>/)[1]}
+.act-row{display:flex;align-items:center;gap:10px;padding:9px 12px 9px 11px;border-left:3px solid var(--t);text-decoration:none;font-size:13px;color:#d5dde1;transition:background .15s ease}.act-row+.act-row{border-top:1px solid var(--line)}.act-row:hover,.act-row[aria-current]{background:#1a262d}.act-title{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.act-count{color:var(--muted);font-variant-numeric:tabular-nums;font-size:12px}
+a.btn{text-decoration:none;display:inline-block}.forum-bar{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px}.chips{display:flex;flex-wrap:wrap;gap:6px}.chip{padding:6px 11px;border:1px solid #3a484f;border-radius:20px;background:transparent;color:var(--muted);font-size:12px;font-weight:600}.chip[aria-pressed=true]{border-color:var(--t,var(--a));color:var(--t,var(--a))}
+.thread-list{border:1px solid var(--line);border-radius:8px;overflow:hidden;background:var(--panel)}.thread-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:4px 14px;align-items:center;padding:12px 16px 12px 14px;border-left:3px solid var(--t);text-decoration:none;transition:background .15s ease}.thread-row+.thread-row{border-top:1px solid var(--line)}.thread-row:hover{background:#172228}.thread-title{font-size:14px;font-weight:600;line-height:1.35;overflow-wrap:anywhere}.thread-meta{grid-column:1;display:flex;flex-wrap:wrap;gap:4px 10px;align-items:center;color:var(--muted);font-size:11px}.thread-count{grid-column:2;grid-row:1/3;text-align:center;font:700 22px/1 'Barlow Condensed'}.thread-count small{display:block;font:400 10px 'DM Sans';color:var(--muted);margin-top:3px}
+.thread-head{margin:6px 0 16px}.thread-head h2{font:700 clamp(24px,3.4vw,34px)/1.1 'Barlow Condensed';margin-top:8px;overflow-wrap:anywhere}.thread-head p{color:var(--muted);font-size:12px;margin-top:6px}.back{display:inline-block;color:var(--muted);font-size:12px;text-decoration:none;margin-bottom:10px}.back:hover{color:#edf1ed}
+.posts{border:1px solid var(--line);border-radius:8px;overflow:hidden;background:var(--panel)}.post{padding:14px 16px}.post+.post{border-top:1px solid var(--line)}.post-head{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 10px;font-size:11px;color:var(--muted)}.post-head b{color:#edf1ed;font-size:13px;overflow-wrap:anywhere}.post-num{color:#6d7d85;text-decoration:none}.post-body{margin-top:7px;font-size:14px;line-height:1.6;overflow-wrap:anywhere;color:#dbe2e5}.post.op{background:#141e23}
+.compose{margin-top:18px;border:1px solid var(--line);border-radius:8px;background:var(--panel);padding:16px;display:grid;gap:12px}.compose h3{font:600 20px 'Barlow Condensed'}.field{display:grid;gap:5px}.field label{font-size:11px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;color:var(--muted)}.row2{display:grid;grid-template-columns:minmax(0,1fr) 180px;gap:12px}
+.compose input,.compose select,.compose textarea{width:100%;padding:9px 11px;border:1px solid #34424a;border-radius:6px;background:#0f161a;color:#edf1ed;font:14px 'DM Sans',sans-serif}.compose textarea{min-height:110px;resize:vertical;line-height:1.5}.compose input:focus,.compose select:focus,.compose textarea:focus{outline:2px solid var(--a);outline-offset:1px;border-color:transparent}
+.compose-foot{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:10px}.hint{color:var(--muted);font-size:11px}.form-error{color:#ff9a8f;font-size:12px}.hp{position:absolute;left:-9999px;width:1px;height:1px;overflow:hidden}
+.empty-forum{padding:36px 20px;text-align:center;color:var(--muted);font-size:13px}.empty-forum b{display:block;color:#edf1ed;font:600 22px 'Barlow Condensed';margin-bottom:6px}
+@media(max-width:540px){.row2{grid-template-columns:1fr}.thread-row{padding:11px 12px}.compose{padding:14px}}
+</style></head><body><header><div class="header-inner"><a class="brand" href="/" style="text-decoration:none">Schizo <span>Battle</span></a><nav class="site-nav" aria-label="Main navigation"><a href="/">Overview</a><a href="/news/">News</a><a href="/live/">Live</a><a href="/whos-fault/">Who's fault?</a><a href="/forum/" aria-current="page">Forum</a></nav></div></header><main class="news-main"><div class="news-intro"><div><h1 class="news-title">Forum</h1><p class="news-sub">Talk about the LP race, the head-to-head, the news, or anything else. No account needed: pick a nickname and post.</p></div></div><div class="news-grid"><div class="news-col" id="view" aria-live="polite"><p class="side-empty">Loading…</p></div><aside class="news-side"><section class="side-box"><h2 class="side-title">Recent activity</h2><div id="activity"><p class="side-empty">Loading…</p></div></section></aside></div><footer>Not affiliated with Riot Games. Posts are public and written by visitors; nicknames are not verified.</footer></main><script>
+const PLAYERS=${JSON.stringify(players)};
+const $=id=>document.getElementById(id);
+const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const CATS={general:['General','#ddbb72'],news:['News','#7fe0c2'],games:['Games','#6fb3ff'],offtopic:['Off-topic','#ff8a80']};
+const rtf=new Intl.RelativeTimeFormat('en',{numeric:'auto'});
+function ago(at,now=Date.now()){const s=(Date.parse(at)-now)/1000;for(const [unit,size] of [['year',31536000],['month',2592000],['week',604800],['day',86400],['hour',3600],['minute',60]])if(Math.abs(s)>=size)return rtf.format(Math.round(s/size),unit);return 'just now';}
+const saved={get(k){try{return localStorage.getItem(k)||'';}catch{return '';}},set(k,v){try{localStorage.setItem(k,v);}catch{}}};
+// Player names are coloured inside message text only; author names are never coloured, since nicknames are not verified.
+function names(text){let out=esc(text);PLAYERS.forEach((p,i)=>{out=out.split(esc(p.name)).join('<span class="who-'+(i?'b':'a')+'">'+esc(p.name)+'</span>');});return out;}
+const cat=c=>CATS[c]||CATS.general;
+const catTag=c=>'<span class="story-tag" style="--t:'+cat(c)[1]+'">'+esc(cat(c)[0])+'</span>';
+const threadUrl=t=>'/forum/?t='+encodeURIComponent(t.id);
+const params=new URLSearchParams(location.search);
+const route={id:params.get('t'),news:params.get('news'),title:params.get('title')};
+let threads=[],filter='all',current=null,busy=false;
+function activity(){
+ $('activity').innerHTML=threads.length?threads.slice(0,20).map(t=>'<a class="act-row" style="--t:'+cat(t.cat)[1]+'" href="'+threadUrl(t)+'"'+(current&&current.id===t.id?' aria-current="page"':'')+' title="'+esc(t.title)+'"><span class="act-title">'+esc(t.title)+'</span><span class="act-count">'+t.posts+'</span></a>').join(''):'<p class="side-empty">Nothing yet. Start the first thread.</p>';
+}
+function threadRow(t){
+ return '<a class="thread-row" style="--t:'+cat(t.cat)[1]+'" href="'+threadUrl(t)+'"><span class="thread-title">'+esc(t.title)+'</span><span class="thread-meta">'+catTag(t.cat)+'<span>by '+esc(t.author)+'</span><span>last post '+esc(ago(t.lastAt))+(t.lastBy?' by '+esc(t.lastBy):'')+'</span></span><span class="thread-count">'+t.posts+'<small>'+(t.posts===1?'post':'posts')+'</small></span></a>';
+}
+const nameField='<div class="field"><label for="f-name">Nickname</label><input id="f-name" maxlength="24" autocomplete="nickname" required value="'+esc(saved.get('forum-name'))+'"></div>';
+const trap='<div class="hp" aria-hidden="true"><label for="f-web">Website</label><input id="f-web" tabindex="-1" autocomplete="off"></div>';
+function composer(kind,heading){
+ const top=kind==='thread'?'<div class="row2"><div class="field"><label for="f-title">Title</label><input id="f-title" maxlength="120" required></div><div class="field"><label for="f-cat">Category</label><select id="f-cat">'+Object.entries(CATS).filter(([k])=>k!=='news').map(([k,v])=>'<option value="'+k+'">'+esc(v[0])+'</option>').join('')+'</select></div></div>':'';
+ return '<form class="compose" id="compose" novalidate><h3>'+esc(heading)+'</h3>'+top+'<div class="row2"><div class="field" style="grid-column:1/-1"><label for="f-body">Message</label><textarea id="f-body" maxlength="2000" required></textarea></div></div><div class="row2">'+nameField+'</div>'+trap+'<div class="compose-foot"><span class="hint">Public. No links are made clickable. Max 2,000 characters.</span><button class="btn primary" id="f-send" type="submit">'+(kind==='thread'?'Post thread':'Post reply')+'</button></div><p class="form-error" id="f-error" role="alert"></p></form>';
+}
+function listView(){
+ current=null;document.title='Forum · Schizo Battle';
+ const shown=threads.filter(t=>filter==='all'||t.cat===filter);
+ $('view').innerHTML='<div class="forum-bar"><div class="chips" role="group" aria-label="Filter by category"><button class="chip" data-f="all" aria-pressed="'+(filter==='all')+'">All</button>'+Object.entries(CATS).map(([k,v])=>'<button class="chip" style="--t:'+v[1]+'" data-f="'+k+'" aria-pressed="'+(filter===k)+'">'+esc(v[0])+'</button>').join('')+'</div><a class="btn primary" href="#compose">New thread</a></div>'
+  +(shown.length?'<div class="thread-list">'+shown.map(threadRow).join('')+'</div>':'<div class="thread-list empty-forum"><b>'+(threads.length?'Nothing here yet':'No threads yet')+'</b>Be the first to start one below.</div>')
+  +composer('thread','Start a new thread');
+ for(const b of document.querySelectorAll('.chip'))b.onclick=()=>{filter=b.dataset.f;listView();};
+ wire('thread');activity();
+}
+function threadView(data){
+ const t=data.thread;current=t;
+ const heading=t?t.title:(route.title||'News story');document.title=heading.slice(0,60)+' · Forum · Schizo Battle';
+ const back='<a class="back" href="'+(route.news?'/news/':'/forum/')+'">← '+(route.news?'Back to news':'All threads')+'</a>';
+ const head='<div class="thread-head">'+back+'<br>'+catTag(t?t.cat:'news')+'<h2>'+names(heading)+'</h2><p>'+(t?'Started by '+esc(t.author)+' · '+esc(ago(t.createdAt))+' · '+t.posts+(t.posts===1?' post':' posts'):'Discussion for this news story')+'</p></div>';
+ const posts=data.posts.length?'<div class="posts">'+data.posts.map((p,i)=>'<article class="post'+(i===0?' op':'')+'" id="p'+(i+1)+'"><div class="post-head"><a class="post-num" href="#p'+(i+1)+'">#'+(i+1)+'</a><b>'+esc(p.name)+'</b><time datetime="'+esc(p.at)+'" title="'+esc(new Date(p.at).toLocaleString())+'">'+esc(ago(p.at))+'</time></div><div class="post-body">'+names(p.body).replace(/\n/g,'<br>')+'</div></article>').join('')+'</div>':'<div class="posts empty-forum"><b>No comments yet</b>Say something about this story.</div>';
+ $('view').innerHTML=head+posts+composer('reply',t?'Reply':'Comment on this story');
+ wire(t?'reply':'news');activity();
+}
+function wire(kind){
+ const f=$('compose');if(!f)return;
+ f.onsubmit=async e=>{
+  e.preventDefault();if(busy)return;
+  const name=$('f-name').value.trim(),body=$('f-body').value.trim(),err=$('f-error');err.textContent='';
+  const payload={name,body,website:$('f-web').value};
+  if(kind==='thread'){payload.title=$('f-title').value.trim();payload.cat=$('f-cat').value;if(payload.title.length<4){err.textContent='Give the thread a title (at least 4 characters).';$('f-title').focus();return;}}
+  if(kind==='news'){payload.newsId=route.news;payload.title=route.title||'News story';}
+  if(kind==='reply')payload.threadId=current.id;
+  if(!body){err.textContent='Write a message first.';$('f-body').focus();return;}
+  if(name.length<2){err.textContent='Pick a nickname (at least 2 characters).';$('f-name').focus();return;}
+  busy=true;$('f-send').disabled=true;$('f-send').textContent='Posting…';
+  try{
+   const r=await fetch(kind==='reply'?'/api/forum/post':'/api/forum/thread',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+   const d=await r.json().catch(()=>({}));if(!r.ok)throw Error(d.error||'Could not post. Try again.');
+   saved.set('forum-name',name);
+   if(kind==='thread'&&d.thread){location.href=threadUrl(d.thread);return;}
+   await load();const last=document.querySelector('.post:last-child');if(last)last.scrollIntoView({block:'center'});
+  }catch(x){err.textContent=x.message;}
+  finally{busy=false;const b=$('f-send');if(b){b.disabled=false;b.textContent=kind==='thread'?'Post thread':'Post reply';}}
+ };
+}
+async function load(){
+ try{
+  const list=await fetch('/api/forum').then(r=>r.ok?r.json():{threads:[]}).catch(()=>({threads:[]}));threads=list.threads||[];
+  if(route.id||route.news){
+   const r=await fetch('/api/forum/thread?'+(route.news?'news='+encodeURIComponent(route.news):'id='+encodeURIComponent(route.id)));const d=await r.json();
+   if(!r.ok){$('view').innerHTML='<a class="back" href="/forum/">← All threads</a><div class="thread-list empty-forum"><b>Thread not found</b>It may have been mistyped.</div>';activity();return;}
+   threadView(d);
+  }else listView();
+ }catch(e){$('view').innerHTML='<div class="thread-list empty-forum"><b>Forum unavailable</b>'+esc(e.message)+'</div>';}
+}
+setInterval(()=>{for(const t of document.querySelectorAll('.post time[datetime]'))t.textContent=ago(t.getAttribute('datetime'));},60000);
 load();
 </script></body></html>`;
